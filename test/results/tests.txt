@@ -1,0 +1,137 @@
+# Every test, verbose
+# recorded 2026-10-18 08:32 UTC at a65765e, Inorderly 0.1.0, go1.24.7 linux/amd64
+# Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
+# command: INORDERLY_RECORD=1 go test -count=1 -v ./...
+
+=== RUN   TestCanonicalJSON
+--- PASS: TestCanonicalJSON (0.00s)
+=== RUN   TestSameEventFromTwoEncoders
+--- PASS: TestSameEventFromTwoEncoders (0.00s)
+=== RUN   TestOrderFields
+--- PASS: TestOrderFields (0.00s)
+=== RUN   TestWatermarkReleasesAndRefusesLate
+--- PASS: TestWatermarkReleasesAndRefusesLate (0.00s)
+=== RUN   TestDuplicatesAndConflicts
+--- PASS: TestDuplicatesAndConflicts (0.00s)
+=== RUN   TestInvalidEvents
+--- PASS: TestInvalidEvents (0.00s)
+=== RUN   TestParseLine
+--- PASS: TestParseLine (0.04s)
+=== RUN   TestCanonicalEscapes
+--- PASS: TestCanonicalEscapes (0.00s)
+=== RUN   TestParentsComeFirst
+--- PASS: TestParentsComeFirst (0.00s)
+=== RUN   TestMissingParentWaitsForTheHold
+--- PASS: TestMissingParentWaitsForTheHold (0.00s)
+=== RUN   TestParentBeyondTheHold
+--- PASS: TestParentBeyondTheHold (0.00s)
+=== RUN   TestChainsCyclesAndSelf
+--- PASS: TestChainsCyclesAndSelf (0.00s)
+=== RUN   TestRememberForgets
+--- PASS: TestRememberForgets (0.00s)
+=== RUN   TestSequenceGaps
+--- PASS: TestSequenceGaps (0.00s)
+=== RUN   TestHashIsOutputSHA256
+--- PASS: TestHashIsOutputSHA256 (0.00s)
+=== RUN   TestExtremeTimes
+--- PASS: TestExtremeTimes (0.00s)
+=== RUN   TestSameEventsSameOutput
+--- PASS: TestSameEventsSameOutput (15.25s)
+=== RUN   TestKeysOnlyGoUp
+--- PASS: TestKeysOnlyGoUp (0.13s)
+=== RUN   TestRestoreRefusesDamage
+--- PASS: TestRestoreRefusesDamage (0.00s)
+=== RUN   TestInvalidUTF8Refused
+--- PASS: TestInvalidUTF8Refused (0.00s)
+=== RUN   TestParseLineKeysExactly
+--- PASS: TestParseLineKeysExactly (0.00s)
+=== RUN   TestManyChildrenOfOneMissingParent
+--- PASS: TestManyChildrenOfOneMissingParent (1.04s)
+=== RUN   TestLongInvertedChain
+--- PASS: TestLongInvertedChain (0.10s)
+=== RUN   FuzzCanonicalMatchesEncodingJSON
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#0
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#1
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#2
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#3
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#4
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#5
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#6
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#7
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#8
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#9
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#10
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#11
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#12
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#13
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#14
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#15
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#16
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#17
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#18
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#19
+=== RUN   FuzzCanonicalMatchesEncodingJSON/seed#20
+--- PASS: FuzzCanonicalMatchesEncodingJSON (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#0 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#1 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#2 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#3 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#4 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#5 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#6 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#7 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#8 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#9 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#10 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#11 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#12 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#13 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#14 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#15 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#16 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#17 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#18 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#19 (0.00s)
+    --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#20 (0.00s)
+PASS
+ok  	github.com/inorderly/inorderly	16.584s
+=== RUN   TestShuffledInputsGiveTheSameOutput
+--- PASS: TestShuffledInputsGiveTheSameOutput (0.98s)
+=== RUN   TestLineEndingsBlankLinesAndNoFinalNewline
+--- PASS: TestLineEndingsBlankLinesAndNoFinalNewline (0.01s)
+=== RUN   TestRejectsAndStrict
+--- PASS: TestRejectsAndStrict (0.03s)
+=== RUN   TestOverLongLineIsRejected
+--- PASS: TestOverLongLineIsRejected (0.21s)
+=== RUN   TestABFeedMerge
+--- PASS: TestABFeedMerge (0.95s)
+=== RUN   TestStateFlags
+--- PASS: TestStateFlags (0.04s)
+=== RUN   TestVersion
+--- PASS: TestVersion (0.00s)
+=== RUN   TestKilledAndResumed
+    main_test.go:348: 30 kills, 240350 events, 120000 ordered, hash sha256:40c6b3a15f32933c79512d152be5d0a3a216543c68cc7f4aa246d1d9b711d661
+RECORD kill_resume kills=30 lines=240351 ordered=120000 late=300 identical=true
+--- PASS: TestKilledAndResumed (15.10s)
+=== RUN   TestPythonProducer
+RECORD python_producer orders=4 events=20000 identical=true hash=sha256:d776c3310abf5483ce9b7d122aa83dc9b46d4773908c1c3805137427320b8837
+--- PASS: TestPythonProducer (6.75s)
+=== RUN   TestPathsAndFlagsChecked
+--- PASS: TestPathsAndFlagsChecked (0.02s)
+=== RUN   TestByteOrderMark
+--- PASS: TestByteOrderMark (0.00s)
+=== RUN   TestResumeRefusesChangedFiles
+--- PASS: TestResumeRefusesChangedFiles (0.07s)
+PASS
+ok  	github.com/inorderly/inorderly/cmd/inorderly	24.629s
+=== RUN   TestNowNeverGoesBack
+--- PASS: TestNowNeverGoesBack (0.00s)
+=== RUN   TestObserveSortsAfterTheMessage
+--- PASS: TestObserveSortsAfterTheMessage (0.00s)
+=== RUN   TestCounterOverflowMovesTheWall
+--- PASS: TestCounterOverflowMovesTheWall (0.00s)
+=== RUN   TestConcurrentStampsAreUnique
+--- PASS: TestConcurrentStampsAreUnique (0.01s)
+PASS
+ok  	github.com/inorderly/inorderly/hlc	0.009s
+?   	github.com/inorderly/inorderly/internal/scenario	[no test files]

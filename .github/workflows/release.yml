@@ -1,0 +1,203 @@
+name: release
+
+# Builds the inorderly binaries, checks each one on the kind of machine it is
+# for, and publishes them with a release.
+#
+# Releases go out on their own. When the test workflow passes on a push to
+# main and the Version in inorderly.go has no tag yet, this workflow builds
+# the binaries from that commit, runs scripts/smoke.py on them, then tags the
+# commit vX.Y.Z and publishes the release "Inorderly vX.Y.Z" with the
+# archives and SHA256SUMS attached. Nothing goes public unless every build
+# and check passes. scripts/release-plan.py has the rules, and RELEASING.md
+# the whole procedure.
+#
+# It also attaches binaries to a release someone publishes by hand, and it
+# can be run by hand to rebuild the binaries of an existing tag.
+
+on:
+  workflow_run:
+    workflows: [test]
+    types: [completed]
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build again, such as v0.1.0"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.x"
+
+jobs:
+  plan:
+    # After the tests, only for a push to main in this repository that passed.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      ref: ${{ steps.plan.outputs.ref }}
+      new: ${{ steps.plan.outputs.new }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN_WORKFLOW: ${{ github.event.workflow_run.name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ ! -f scripts/release-plan.py ]; then
+            echo "::notice title=Release plan::$(git rev-parse --short HEAD) predates scripts/release-plan.py, so this run releases nothing"
+            exit 0
+          fi
+          python3 scripts/release-plan.py
+
+  # Pure Go, so every binary is built here, statically, from the one commit.
+  build:
+    needs: plan
+    if: needs.plan.outputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq zip
+      - name: Build and package
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          for target in linux/amd64 linux/arm64 darwin/arm64 darwin/amd64 windows/amd64; do
+            os=${target%/*}; arch=${target#*/}; ext=""
+            [ "$os" = windows ] && ext=.exe
+            dir="pkg/${os}_${arch}"
+            mkdir -p "$dir"
+            GOOS=$os GOARCH=$arch go build -trimpath -ldflags '-s -w' -o "$dir/inorderly$ext" ./cmd/inorderly
+            file "$dir/inorderly$ext"
+            cp LICENSE NOTICE THIRD_PARTY_LICENSES.md README.md "$dir/"
+            if [ "$os" = windows ]; then
+              (cd "$dir" && zip -q "../../inorderly_${os}_${arch}.zip" *)
+            else
+              tar -czf "inorderly_${os}_${arch}.tar.gz" -C "$dir" .
+            fi
+          done
+          file pkg/linux_amd64/inorderly | grep -q 'statically linked'
+          file pkg/darwin_amd64/inorderly | grep -q 'x86_64'
+          ls -l inorderly_*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: inorderly_archives
+          path: inorderly_*
+
+  # Each binary runs the smoke check on its own kind of machine. The Intel
+  # macOS build can only be checked for its architecture, in the build job.
+  check:
+    needs: [plan, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            archive: inorderly_linux_amd64.tar.gz
+          - runner: ubuntu-24.04-arm
+            archive: inorderly_linux_arm64.tar.gz
+          - runner: macos-latest
+            archive: inorderly_darwin_arm64.tar.gz
+          - runner: windows-latest
+            archive: inorderly_windows_amd64.zip
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: inorderly_archives
+      - name: Smoke check
+        if: runner.os != 'Windows'
+        run: |
+          mkdir bin
+          tar -xzf "${{ matrix.archive }}" -C bin
+          python3 scripts/smoke.py bin
+      - name: Smoke check (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Expand-Archive "${{ matrix.archive }}" -DestinationPath bin
+          python scripts/smoke.py bin
+          if ($LASTEXITCODE -ne 0) { throw "smoke check failed" }
+
+  release:
+    needs: [plan, build, check]
+    # Two runs for the same tag take turns; the second finds it published.
+    concurrency:
+      group: release-${{ needs.plan.outputs.tag }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}
+      REF: ${{ needs.plan.outputs.ref }}
+      NEW: ${{ needs.plan.outputs.new }}
+      GH_TOKEN: ${{ github.token }}
+      FILES: >-
+        inorderly_linux_amd64.tar.gz inorderly_linux_arm64.tar.gz
+        inorderly_darwin_arm64.tar.gz inorderly_darwin_amd64.tar.gz
+        inorderly_windows_amd64.zip SHA256SUMS
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: inorderly_archives
+          path: dist
+      - name: Checksums and notes
+        run: |
+          cd dist
+          sha256sum inorderly_* > SHA256SUMS
+          cat SHA256SUMS
+          cat > ../notes.md <<'EOF'
+          Ready-built inorderly binaries. Each archive holds the `inorderly` command with the license files and README. `inorderly` reads NDJSON events and writes them in one deterministic order; `inorderly demo` runs the self-checking demo; `inorderly version` prints the version.
+
+          | System | File |
+          |---|---|
+          | Linux, x86-64 (static) | inorderly_linux_amd64.tar.gz |
+          | Linux, ARM64 (static) | inorderly_linux_arm64.tar.gz |
+          | macOS, Apple silicon | inorderly_darwin_arm64.tar.gz |
+          | macOS, Intel | inorderly_darwin_amd64.tar.gz |
+          | Windows, x86-64 | inorderly_windows_amd64.zip |
+
+          SHA256SUMS lists the checksums. The macOS binaries aren't signed by Apple, so macOS may ask you to allow them the first time, or you can run `xattr -d com.apple.quarantine inorderly`. To use Inorderly from Go instead: `go get github.com/inorderly/inorderly@latest`.
+          EOF
+      - name: Tag the commit and publish the release, binaries attached
+        if: env.NEW == 'true'
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "$TAG is out already."
+            exit 0
+          fi
+          cd dist
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$REF" \
+            --title "Inorderly $TAG" --notes-file ../notes.md $FILES
+      - name: Attach the binaries to an existing release
+        if: env.NEW != 'true'
+        run: |
+          cd dist
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber $FILES
+          body=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+          if [ -z "$body" ]; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file ../notes.md
+          fi

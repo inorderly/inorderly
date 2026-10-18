@@ -130,19 +130,19 @@ function.
 Every number here comes from the files in [test/results](test/results),
 written by `sh scripts/record-tests.sh`.
 
-- **The same events in any order.** {{DETERMINISM}}
-- **Killed and resumed.** {{KILLS}}
-- **The demo.** `inorderly demo` checks {{DEMO_EVENTS}} events in
-  {{DEMO_ORDERS}} shuffled arrival orders, with every event sent one to five
+- **The same events in any order.** 10,000 random tangles of events, with parents in cycles, parents that never come, clocks that disagree and shared times, each fed in 20 arrival orders with repeats and snapshot-and-restore along the way: 200,000 orders, one output per set.
+- **Killed and resumed.** A run of 240,351 lines from two input files, with late and invalid lines, is killed with SIGKILL 30 times, each time at a random moment after a fresh checkpoint, and started again. The output, the rejects and the replay hash match a run that was never interrupted.
+- **The demo.** `inorderly demo` checks 100,000 events in
+  20 shuffled arrival orders, with every event sent one to five
   times: one output, one hash. It also restores from snapshots part way,
-  refuses {{DEMO_LATE}} late events without changing anything else, keeps
-  {{DEMO_CHILDREN}} children after their parents ({{DEMO_INVERTED}} of them
-  with clocks behind their parent's), reports all {{DEMO_ORPHANS}} orphans,
-  and merges two copies of a {{DEMO_TICKS}}-tick feed, each missing about 5%,
-  reporting exactly the {{DEMO_LOST}} ticks lost from both.
+  refuses 1,000 late events without changing anything else, keeps
+  13,916 children after their parents (3,919 of them
+  with clocks behind their parent's), reports all 1,044 orphans,
+  and merges two copies of a 100,000-tick feed, each missing about 5%,
+  reporting exactly the 247 ticks lost from both.
 - **Another language.** A Python producer with its own JSON encoder, key
   order and escapes gives the same output from every arrival order.
-- **Speed.** {{SPEED}}
+- **Speed.** On a two-core 2.1 GHz Xeon cloud machine, one Orderer takes about 428,000 arriving events a second (2.3 µs each, two-thirds of them repeats) and writes about 143,000 ordered events a second.
 
 The tests run on Linux, macOS and Windows on every push, with the race
 detector on Linux.

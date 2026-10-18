@@ -1,0 +1,63 @@
+{
+  "version": "0.1.0",
+  "go": "go1.24.7",
+  "os": "linux",
+  "arch": "amd64",
+  "cpus": 2,
+  "seed": 1,
+  "events": 100000,
+  "producers": 16,
+  "window": 200,
+  "hold": 200,
+  "shuffles": {
+    "orders": 20,
+    "arrivals_total": 6001407,
+    "duplicates_dropped_total": 4001407,
+    "late_total": 0,
+    "ordered_each": 100000,
+    "identical": true,
+    "hash": "sha256:bf3a0500dadf75e1e6eb4781506f0e2a7f0872d282ca4eafaae20a8cdb822dfc",
+    "hash_is_output_sha256": true,
+    "same_as_sorted_arrival": true
+  },
+  "snapshot_restore": {
+    "snapshots_taken": 12,
+    "identical": true
+  },
+  "causal": {
+    "children": 13916,
+    "inverted_clock_children": 3919,
+    "after_their_parent": 13916,
+    "orphans": 1044,
+    "orphans_reported_missing": 1044,
+    "events_with_missing_parents": 1044
+  },
+  "late": {
+    "injected": 1000,
+    "refused": 1000,
+    "rest_identical": true
+  },
+  "ab_merge": {
+    "ticks": 100000,
+    "feed_a_lines": 94954,
+    "feed_b_lines": 94935,
+    "dropped_from_a": 5046,
+    "dropped_from_b": 5065,
+    "lost_in_both": 247,
+    "ordered": 99753,
+    "duplicates_dropped": 90136,
+    "gaps_reported": 247,
+    "gaps_match_lost": true,
+    "in_seq_order": true
+  },
+  "throughput": {
+    "pushes": 299814,
+    "ordered": 100000,
+    "seconds": 0.699817301,
+    "pushes_per_second": 428417.53064918873,
+    "ordered_per_second": 142894.4381013524,
+    "nanoseconds_per_push": 2334.1715230109335
+  },
+  "passed": true,
+  "failures": []
+}

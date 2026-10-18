@@ -1,0 +1,11 @@
+# The release smoke check on a static Linux binary built as the release workflow builds it
+# recorded 2026-10-18 08:37 UTC at a65765e, Inorderly 0.1.0, go1.24.7 linux/amd64
+# Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
+# command: python3 scripts/smoke.py BIN
+
+inorderly: 0.1.0 linux/amd64 revision a65765ebcd46
+four shuffled orders with duplicates, one output: passed
+rejects and -strict: passed
+killed 3 times and resumed, same output: passed
+self-checking demo: passed
+smoke check passed
