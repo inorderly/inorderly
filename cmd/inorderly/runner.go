@@ -245,7 +245,18 @@ func (r *runner) compact() error {
 	var num int
 	fmt.Sscanf(r.logName, "released-%d.ndjson", &num)
 	name := fmt.Sprintf("released-%d.ndjson", num+1)
-	f, w, err := reopen(filepath.Join(r.stateDir, name), 0)
+	path := filepath.Join(r.stateDir, name)
+	// A run killed after compacting but before its checkpoint named the new
+	// log leaves a file of this name, which a restart lists as left over.
+	// It is about to be the log, so it mustn't be removed with the rest.
+	left := r.oldLogs[:0]
+	for _, old := range r.oldLogs {
+		if old != path {
+			left = append(left, old)
+		}
+	}
+	r.oldLogs = left
+	f, w, err := reopen(path, 0)
 	if err != nil {
 		return err
 	}
@@ -592,7 +603,9 @@ func (r *runner) checkpoint(finished bool) error {
 		d.Close()
 	}
 	for _, old := range r.oldLogs {
-		os.Remove(old)
+		if old != r.logPath() {
+			os.Remove(old)
+		}
 	}
 	r.oldLogs = nil
 	return nil

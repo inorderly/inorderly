@@ -26,7 +26,7 @@ import (
 )
 
 // Version is the release version of this code.
-const Version = "0.1.0"
+const Version = "0.1.1"
 
 // MaxLine is the longest input line ParseLine accepts, in bytes.
 const MaxLine = 16 << 20

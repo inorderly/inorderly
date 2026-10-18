@@ -489,3 +489,84 @@ func TestUseCasesThroughTheCommand(t *testing.T) {
 		})
 	}
 }
+
+// A run killed after compaction wrote the next record log, but before a
+// checkpoint named it, leaves that file behind. The restarted run lists it
+// as left over and then compacts into the same name; the checkpoint that
+// names it must not delete it.
+func TestCompactionAfterAnInterruptedCompaction(t *testing.T) {
+	saved := compactSlack
+	defer func() { compactSlack = saved }()
+	dir := t.TempDir()
+	set := scenario.Generate(scenario.Params{Seed: 7, Events: 3000, Producers: 4, Hold: 20})
+	in := write(t, dir, "in.ndjson", ndjson(set.Events))
+	cfg := inorderly.Config{Window: 50, Hold: 50, Remember: 20}
+	want := runCLI(t, nil, "-in", in, "-window", "50", "-hold", "50", "-remember", "20")
+	if want.code != 0 {
+		t.Fatalf("exit %d: %s", want.code, want.stderr)
+	}
+	out, state := filepath.Join(dir, "out.ndjson"), filepath.Join(dir, "state")
+	start := func() *runner {
+		r, err := newRunner(cfg, []string{in}, out, "", state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	step := func(r *runner, lines int) {
+		for i := 0; i < lines; i++ {
+			lr, line, ok, err := r.nextLine()
+			if err != nil || !ok {
+				t.Fatalf("line %d: %v %v", i, ok, err)
+			}
+			if err := r.handle(lr, line); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := r.checkpoint(false); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The first run checkpoints without compacting, and is "killed" just
+	// after writing its next log.
+	compactSlack = 1 << 30
+	r := start()
+	step(r, 500)
+	r.close()
+	if err := os.WriteFile(filepath.Join(state, "released-2.ndjson"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The second run compacts at its first checkpoint, into released-2.
+	compactSlack = 0
+	r = start()
+	step(r, 500)
+	r.close()
+	var cp checkpoint
+	b, err := os.ReadFile(filepath.Join(state, "checkpoint.json"))
+	if err == nil {
+		err = json.Unmarshal(b, &cp)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cp.Log != "released-2.ndjson" {
+		t.Fatalf("the checkpoint names %s; the test expects a compaction into released-2", cp.Log)
+	}
+	st, err := os.Stat(filepath.Join(state, cp.Log))
+	if err != nil || st.Size() < cp.LogSize {
+		t.Fatalf("the log the checkpoint names is gone or short: %v", err)
+	}
+
+	// A third run carries on and finishes with the uninterrupted output.
+	r = start()
+	if _, err := r.process(100); err != nil {
+		t.Fatal(err)
+	}
+	r.close()
+	got, _ := os.ReadFile(out)
+	if !bytes.Equal(got, want.stdout) {
+		t.Fatal("the resumed run's output differs from an uninterrupted run")
+	}
+}
