@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func ev(id, producer string, t int64, parents ...string) Event {
@@ -494,9 +495,9 @@ func TestSameEventsSameOutput(t *testing.T) {
 	}
 }
 
-// TestKeysOnlyGoUp checks the output against the rules directly: positions
-// count from 1, and every child whose parent comes out before the child's
-// deadline comes out after it.
+// TestKeysOnlyGoUp checks every output position counts from 1, and that each
+// event's missing list names exactly the parents that didn't come out before
+// it.
 func TestKeysOnlyGoUp(t *testing.T) {
 	for round := 0; round < 100; round++ {
 		rng := rand.New(rand.NewPCG(uint64(round), 99))
@@ -570,5 +571,100 @@ func TestRestoreRefusesDamage(t *testing.T) {
 	bad.Pending = []Event{ev("old", "p", 0)} // below the watermark: should have gone out
 	if _, err := Restore(&bad, nil); err == nil {
 		t.Fatal("a held event below the watermark restored")
+	}
+}
+
+func TestInvalidUTF8Refused(t *testing.T) {
+	o := mustNew(t, Config{})
+	for _, e := range []Event{
+		{ID: "\xff", Producer: "p", Time: 1},
+		{ID: "a", Producer: "p\xfe", Time: 1},
+		{ID: "a", Producer: "p", Time: 1, Parents: []string{"ok", "\xc3"}},
+	} {
+		if _, _, err := o.Push(e); err == nil {
+			t.Fatalf("%q was accepted", e.Identity())
+		}
+	}
+}
+
+func TestParseLineKeysExactly(t *testing.T) {
+	for _, bad := range []string{
+		`{"ID":"a","producer":"p","time":1}`,
+		`{"id":"a","PRODUCER":"p","time":1}`,
+		`{"id":"a","producer":"p","Time":1}`,
+		`{"id":"a","id":"b","producer":"p","time":1}`,
+		`{"id":"a","producer":"p","time":1,"data":{"x":1,"x":2}}`,
+		`{"id":1,"producer":"p","time":1}`,
+		`{"id":"a","producer":"p","time":"1"}`,
+	} {
+		if _, err := ParseLine([]byte(bad)); err == nil {
+			t.Fatalf("%s parsed", bad)
+		}
+	}
+	e, err := ParseLine([]byte(` {"time":1, "data":null, "producer":"p", "id":"a"} `))
+	if err != nil || e.Data != nil || e.ID != "a" {
+		t.Fatalf("%+v %v", e, err)
+	}
+}
+
+// Many children waiting on one parent that never comes must not cost time
+// that grows with the square of their number.
+func TestManyChildrenOfOneMissingParent(t *testing.T) {
+	timed := func(n int) float64 {
+		o := mustNew(t, Config{Window: 10, Hold: 1 << 40})
+		start := time.Now()
+		for i := 0; i < n; i++ {
+			o.Push(ev(fmt.Sprintf("c%d", i), "p", int64(i), "ghost"))
+		}
+		if len(o.Flush()) != n {
+			t.Fatal("not all released")
+		}
+		return time.Since(start).Seconds()
+	}
+	small, large := timed(20000), timed(80000)
+	if large > 12*small+0.5 {
+		t.Fatalf("20,000 children took %.2fs but 80,000 took %.2fs", small, large)
+	}
+}
+
+// A long run of events, each naming the one before as its parent with a
+// clock behind it, is placed straight after its parent only MaxChain deep;
+// after that each goes at its own deadline. Keys stay short, so the run
+// costs time in proportion to its length.
+func TestLongInvertedChain(t *testing.T) {
+	chain := func(n int) ([]Released, float64) {
+		o := mustNew(t, Config{Window: 1 << 40, Hold: 1 << 40})
+		start := time.Now()
+		var rel []Released
+		for i := 0; i < n; i++ {
+			e := ev(fmt.Sprintf("x%07d", n-i), "p", 0)
+			if i > 0 {
+				e.Parents = []string{fmt.Sprintf("x%07d", n-i+1)}
+			}
+			_, r, _ := o.Push(e)
+			rel = append(rel, r...)
+		}
+		rel = append(rel, o.Flush()...)
+		return rel, time.Since(start).Seconds()
+	}
+	rel, small := chain(2000)
+	// The first event's key is one point long, so links 1 to MaxChain-1 fit.
+	for i := 1; i < MaxChain; i++ {
+		if rel[i].Event.Parents[0] != rel[i-1].Event.ID || len(rel[i].Missing) != 0 {
+			t.Fatalf("link %d isn't straight after its parent", i)
+		}
+	}
+	// The rest go at their deadline, in their own order, so every link past
+	// MaxChain comes before its parent and reports it missing.
+	missing := 0
+	for _, r := range rel {
+		missing += len(r.Missing)
+	}
+	if missing != len(rel)-MaxChain-1 {
+		t.Fatalf("%d links reported a missing parent, want %d", missing, len(rel)-MaxChain-1)
+	}
+	_, large := chain(8000)
+	if large > 12*small+0.5 {
+		t.Fatalf("a 2,000-link chain took %.2fs but 8,000 took %.2fs", small, large)
 	}
 }

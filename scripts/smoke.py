@@ -11,9 +11,10 @@ in a private temporary directory, with readings made by
 examples/python/producer.py: four shuffled arrival orders with duplicates
 must give the same output as the sorted one, and the replay hash must be
 the output's SHA-256; late, conflicting and invalid lines must land in the
-rejects file and -strict must exit 3; a run with -state must be killed part
-way, started again and finish with the same output; and the self-checking
-demo must pass. The release workflow runs it on every binary it ships, on
+rejects file and -strict must exit 3; a run with -state, -rejects and
+-remember must be killed part way, after a checkpoint, up to three times,
+and finish with the same output and rejects; and the self-checking demo
+must pass. The release workflow runs it on every binary it ships, on
 the machine type that binary is for; any failure stops the release.
 """
 import hashlib
@@ -87,18 +88,29 @@ def smoke(bin_dir, version):
         events = d / "events.ndjson"
         events.write_bytes(produce("--seed", "5", "--events", "200000"))
         clean, killed = d / "clean.ndjson", d / "killed.ndjson"
-        run([exe, "-in", events, "-out", clean, "-window", "500", "-state", d / "clean-state"])
-        flags = [exe, "-in", events, "-out", killed, "-window", "500", "-state", d / "state", "-checkpoint-every", "2000"]
+        common = ["-window", "500", "-remember", "20000", "-checkpoint-every", "2000"]
+        run([exe, "-in", events, "-out", clean, "-rejects", d / "clean.rejects", *common, "-state", d / "clean-state"])
+        state = d / "state"
+        flags = [exe, "-in", events, "-out", killed, "-rejects", d / "killed.rejects", *common, "-state", state]
+        checkpoint = state / "checkpoint.json"
         kills = 0
-        for delay in (0.3, 0.6, 0.9):
+        for _ in range(3):
+            before = checkpoint.stat().st_mtime_ns if checkpoint.exists() else 0
             p = subprocess.Popen([str(a) for a in flags], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(delay)
-            if p.poll() is None:
-                p.kill()  # SIGKILL, or TerminateProcess on Windows
-                kills += 1
+            # Kill it once it has written a new checkpoint, so it is killed
+            # part way through a run that has made progress.
+            deadline = time.monotonic() + 60
+            while p.poll() is None and time.monotonic() < deadline:
+                if checkpoint.exists() and checkpoint.stat().st_mtime_ns != before:
+                    p.kill()  # SIGKILL, or TerminateProcess on Windows
+                    kills += 1
+                    break
+                time.sleep(0.005)
             p.wait()
+        require(kills > 0, "the run finished before it could be killed")
         run(flags)
         require(clean.read_bytes() == killed.read_bytes(), f"after {kills} kills the output differs")
+        require((d / "clean.rejects").read_bytes() == (d / "killed.rejects").read_bytes(), "after the kills the rejects differ")
         print(f"killed {kills} times and resumed, same output: passed", flush=True)
 
     report = json.loads(run([exe, "demo", "-events", "20000", "-orders", "4", "-ticks", "20000"]).stdout)

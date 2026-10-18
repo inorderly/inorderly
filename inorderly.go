@@ -18,12 +18,11 @@
 package inorderly
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strconv"
+	"unicode/utf8"
 )
 
 // Version is the release version of this code.
@@ -67,65 +66,94 @@ func (e *Event) Identity() string {
 	return e.Producer + "#" + strconv.FormatUint(e.Seq, 10)
 }
 
-// Validate reports whether the event can be ordered, and compacts Data.
+// Validate reports whether the event can be ordered, and puts Data in its
+// canonical form.
 func (e *Event) Validate() error {
+	return e.validate(true)
+}
+
+func (e *Event) validate(data bool) error {
 	if e.Producer == "" {
 		return errors.New("producer is empty")
 	}
 	if e.ID == "" && e.Seq == 0 {
 		return errors.New("the event has neither an id nor a seq above zero")
 	}
+	// Identities must be valid UTF-8: invalid bytes would print as U+FFFD,
+	// so two different identities could look the same, and a snapshot
+	// couldn't hold them.
+	if !utf8.ValidString(e.ID) || !utf8.ValidString(e.Producer) {
+		return errors.New("the id or producer isn't valid UTF-8")
+	}
 	for _, p := range e.Parents {
 		if p == "" {
 			return errors.New("a parent is empty")
 		}
+		if !utf8.ValidString(p) {
+			return errors.New("a parent isn't valid UTF-8")
+		}
 	}
-	if len(e.Data) > 0 {
+	if data && len(e.Data) > 0 {
 		c, err := canonicalJSON(e.Data)
 		if err != nil {
 			return fmt.Errorf("data is not valid JSON: %v", err)
 		}
 		e.Data = c
-		if string(c) == "null" {
-			e.Data = nil // the same as no data
-		}
+	}
+	if string(e.Data) == "null" {
+		e.Data = nil // the same as no data
 	}
 	return nil
 }
 
-// ParseLine reads one event from one line of NDJSON. Unknown fields, a
-// missing producer or time, fractional numbers and anything after the
-// object are errors.
+// eventFields are the only keys an input line may have, spelled exactly so.
+var eventFields = map[string]bool{"id": true, "producer": true, "seq": true, "time": true,
+	"logical": true, "parents": true, "data": true}
+
+// ParseLine reads one event from one line of NDJSON. Keys are matched
+// exactly: unknown or repeated keys, a missing producer or time, fractional
+// numbers and anything after the object are errors.
 func ParseLine(line []byte) (Event, error) {
 	if len(line) > MaxLine {
 		return Event{}, fmt.Errorf("the line is longer than %d bytes", MaxLine)
 	}
-	var raw struct {
-		ID       string          `json:"id"`
-		Producer *string         `json:"producer"`
-		Seq      uint64          `json:"seq"`
-		Time     *int64          `json:"time"`
-		Logical  uint32          `json:"logical"`
-		Parents  []string        `json:"parents"`
-		Data     json.RawMessage `json:"data"`
-	}
-	dec := json.NewDecoder(bytes.NewReader(line))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&raw); err != nil {
+	members, err := topLevel(line)
+	if err != nil {
 		return Event{}, err
 	}
-	if _, err := dec.Token(); err != io.EOF {
-		return Event{}, errors.New("there is more after the event object")
+	var e Event
+	for k, v := range members {
+		if !eventFields[k] {
+			return Event{}, fmt.Errorf("unknown field %q", k)
+		}
+		var err error
+		switch k {
+		case "id":
+			err = json.Unmarshal(v, &e.ID)
+		case "producer":
+			err = json.Unmarshal(v, &e.Producer)
+		case "seq":
+			err = json.Unmarshal(v, &e.Seq)
+		case "time":
+			err = json.Unmarshal(v, &e.Time)
+		case "logical":
+			err = json.Unmarshal(v, &e.Logical)
+		case "parents":
+			err = json.Unmarshal(v, &e.Parents)
+		case "data":
+			e.Data = v // already canonical
+		}
+		if err != nil {
+			return Event{}, fmt.Errorf("%s: %v", k, err)
+		}
 	}
-	if raw.Producer == nil {
+	if _, ok := members["producer"]; !ok {
 		return Event{}, errors.New("producer is missing")
 	}
-	if raw.Time == nil {
+	if _, ok := members["time"]; !ok {
 		return Event{}, errors.New("time is missing")
 	}
-	e := Event{ID: raw.ID, Producer: *raw.Producer, Seq: raw.Seq, Time: *raw.Time,
-		Logical: raw.Logical, Parents: raw.Parents, Data: raw.Data}
-	if err := e.Validate(); err != nil {
+	if err := e.validate(false); err != nil {
 		return Event{}, err
 	}
 	return e, nil

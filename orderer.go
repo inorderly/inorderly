@@ -51,6 +51,9 @@ const (
 )
 
 func (s Status) String() string {
+	if s < Accepted || s > Conflict {
+		return "unknown"
+	}
 	return [...]string{"accepted", "duplicate", "late", "conflict"}[s]
 }
 
@@ -102,6 +105,12 @@ type Stats struct {
 	Pending        int    `json:"pending"`
 }
 
+// MaxChain is the longest chain of parents a child is placed straight
+// after. A child whose parent's key already holds MaxChain points goes at its
+// own deadline instead, so that a long run of events whose clocks each fall
+// behind their parent's can't make keys grow without limit.
+const MaxChain = 64
+
 // maxGaps is how many gaps Gaps keeps; SeqGaps counts them all.
 const maxGaps = 1000
 
@@ -114,6 +123,7 @@ type node struct {
 	deadline int64
 	resolved bool
 	key      key
+	waiting  []string // parents this node is listed under in waiters
 }
 
 // releasedInfo is what is remembered of a released event. Its key isn't
@@ -135,6 +145,7 @@ type Orderer struct {
 	ready     readyHeap
 	deadlines deadlineHeap
 	waiters   map[string][]*node
+	waitCount map[string]int // unresolved nodes listed under each parent
 	released  map[string]releasedInfo
 	forget    forgetHeap
 	held      heldHeap // held events by time, to know how far back to remember
@@ -153,12 +164,13 @@ func New(cfg Config) (*Orderer, error) {
 		return nil, err
 	}
 	return &Orderer{
-		cfg:      cfg,
-		pending:  map[string]*node{},
-		waiters:  map[string][]*node{},
-		released: map[string]releasedInfo{},
-		hash:     sha256.New(),
-		lastSeq:  map[string]uint64{},
+		cfg:       cfg,
+		pending:   map[string]*node{},
+		waiters:   map[string][]*node{},
+		waitCount: map[string]int{},
+		released:  map[string]releasedInfo{},
+		hash:      sha256.New(),
+		lastSeq:   map[string]uint64{},
 	}, nil
 }
 
@@ -256,6 +268,8 @@ func (o *Orderer) resolveOrWait(n *node) {
 	for _, p := range n.parents {
 		if !o.known(n, p) {
 			o.waiters[p] = append(o.waiters[p], n)
+			o.waitCount[p]++
+			n.waiting = append(n.waiting, p)
 		}
 	}
 }
@@ -274,7 +288,7 @@ func (o *Orderer) known(n *node, p string) bool {
 func (o *Orderer) candidate(n *node, p string, force bool) (key, bool) {
 	dk := key{deadlinePoint(n.deadline)}
 	after := func(pk key) key {
-		if pk.cmp(dk) < 0 {
+		if pk.cmp(dk) < 0 && len(pk) < MaxChain {
 			return pk.extend(n.own)
 		}
 		return dk.extend(n.own)
@@ -321,6 +335,19 @@ func (o *Orderer) tryResolve(n *node, force bool) bool {
 	n.key = k
 	n.resolved = true
 	heap.Push(&o.ready, n)
+	// n no longer waits: take it off its parents' lists, and drop a list
+	// once nobody on it is waiting.
+	for _, p := range n.waiting {
+		if c, ok := o.waitCount[p]; ok {
+			if c <= 1 {
+				delete(o.waitCount, p)
+				delete(o.waiters, p)
+			} else {
+				o.waitCount[p] = c - 1
+			}
+		}
+	}
+	n.waiting = nil
 	return true
 }
 
@@ -333,6 +360,7 @@ func (o *Orderer) propagate(n *node) {
 		queue = queue[1:]
 		children := o.waiters[cur.ident]
 		delete(o.waiters, cur.ident)
+		delete(o.waitCount, cur.ident)
 		for _, c := range children {
 			if !c.resolved && o.pending[c.ident] == c && o.tryResolve(c, false) {
 				queue = append(queue, c)
@@ -393,21 +421,6 @@ func (o *Orderer) emit(n *node) {
 		heap.Push(&o.forget, forgetEntry{time: n.ev.Time, ident: n.ident})
 	}
 	delete(o.pending, n.ident)
-	for _, p := range n.parents {
-		if ws, ok := o.waiters[p]; ok {
-			kept := ws[:0]
-			for _, w := range ws {
-				if !w.resolved {
-					kept = append(kept, w)
-				}
-			}
-			if len(kept) == 0 {
-				delete(o.waiters, p)
-			} else {
-				o.waiters[p] = kept
-			}
-		}
-	}
 	o.stats.Out++
 	if len(missing) > 0 {
 		o.stats.MissingParents++
@@ -429,6 +442,9 @@ func (o *Orderer) emit(n *node) {
 	}
 	o.out = append(o.out, Released{Pos: o.pos, Event: n.ev, Missing: missing, Line: line,
 		Record: Record{Ident: n.ident, Time: n.ev.Time, Sum: hex.EncodeToString(sum[:])}})
+	// The node may stay in the deadline heap until its deadline passes; keep
+	// only what the heaps compare.
+	n.ev.Data, n.ev.Parents, n.parents, n.canon, n.key = nil, nil, nil, nil, nil
 }
 
 // Hash is the replay hash so far: "sha256:" and the hex SHA-256 of every

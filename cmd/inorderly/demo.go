@@ -98,9 +98,19 @@ func runOrder(cfg inorderly.Config, events []inorderly.Event, snapshotEvery int)
 	}
 	var lines [][]byte
 	snaps := 0
+	var records []inorderly.Record
 	for i, e := range events {
 		if snapshotEvery > 0 && i > 0 && i%snapshotEvery == 0 {
-			s, err := o.Snapshot()
+			// Alternately the whole state, and the held events with the
+			// released records kept beside them.
+			held := snaps%2 == 1
+			var s *inorderly.Snapshot
+			var err error
+			if held {
+				s, err = o.SnapshotHeld()
+			} else {
+				s, err = o.Snapshot()
+			}
 			if err != nil {
 				return nil, nil, 0, err
 			}
@@ -112,7 +122,11 @@ func runOrder(cfg inorderly.Config, events []inorderly.Event, snapshotEvery int)
 			if err := json.Unmarshal(b, &back); err != nil {
 				return nil, nil, 0, err
 			}
-			if o, err = inorderly.Restore(&back, nil); err != nil {
+			var extra []inorderly.Record
+			if held {
+				extra = records
+			}
+			if o, err = inorderly.Restore(&back, extra); err != nil {
 				return nil, nil, 0, err
 			}
 			snaps++
@@ -123,6 +137,7 @@ func runOrder(cfg inorderly.Config, events []inorderly.Event, snapshotEvery int)
 		}
 		for _, r := range rel {
 			lines = append(lines, r.Line)
+			records = append(records, r.Record)
 		}
 	}
 	for _, r := range o.Flush() {

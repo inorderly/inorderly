@@ -28,7 +28,9 @@ output of the events that were on time.
 | `data` | any JSON value | The payload. |
 
 An event needs `id` or `seq`. Its **identity** is `id`, or else
-`producer#seq`. Parents name identities.
+`producer#seq`. Parents name identities. Identities, producers and parents
+must be valid UTF-8. An input line's keys must be spelled exactly as above,
+each at most once.
 
 Every event is put in a **canonical form**: fields in the order above, empty
 ones left out, `data` with no whitespace, object keys sorted by their bytes,
@@ -65,13 +67,17 @@ Each event has a **deadline**: its `time` plus `Hold`.
 An event's key is the largest of:
 
 - its own point, alone;
-- for each parent that is in the set and whose key comes before the event's
-  deadline point: the parent's key with the event's own point added. That
-  puts the event straight after its parent;
+- for each parent that is in the set, whose key comes before the event's
+  deadline point and holds fewer than 64 points: the parent's key with the
+  event's own point added. That puts the event straight after its parent;
 - for each parent that never comes, comes at or after the event's deadline,
-  or is more than `Remember` older than the event (when `Remember` is above
-  0): the event's deadline point followed by its own point. That puts the
-  event at its deadline.
+  is more than `Remember` older than the event (when `Remember` is above 0),
+  or whose key already holds 64 points: the event's deadline point followed
+  by its own point. That puts the event at its deadline.
+
+The 64-point limit (`MaxChain`) only matters for a run of more than 63
+events in a row, each with a clock behind its parent's. It keeps keys short
+whatever a producer sends.
 
 Events come out in key order. When events wait on each other in a cycle,
 the one with the earliest deadline (then the lowest own point) is settled

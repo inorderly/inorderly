@@ -259,7 +259,8 @@ func TestKilledAndResumed(t *testing.T) {
 	a := write(t, dir, "a.ndjson", append(ndjson(ea), []byte("garbage line\n")...))
 	b := write(t, dir, "b.ndjson", ndjson(eb))
 	flags := func(out, state string) []string {
-		return []string{"-in", a, "-in", b, "-out", out, "-rejects", out + ".rejects", "-window", "100", "-state", state, "-checkpoint-every", "997"}
+		return []string{"-in", a, "-in", b, "-out", out, "-rejects", out + ".rejects", "-window", "100",
+			"-remember", "2000", "-state", state, "-checkpoint-every", "997"}
 	}
 	clean := filepath.Join(dir, "clean.ndjson")
 	ref := runCLI(t, nil, flags(clean, filepath.Join(dir, "clean-state"))...)
@@ -271,7 +272,15 @@ func TestKilledAndResumed(t *testing.T) {
 	rng := rand.New(rand.NewPCG(1, 2))
 	kills := 0
 	var last result
+	cpFile := filepath.Join(state, "checkpoint.json")
+	stamp := func() time.Time {
+		if st, err := os.Stat(cpFile); err == nil {
+			return st.ModTime()
+		}
+		return time.Time{}
+	}
 	for attempt := 0; ; attempt++ {
+		before := stamp()
 		cmd := exec.Command(bin, flags(out, state)...)
 		var errb bytes.Buffer
 		cmd.Stderr = &errb
@@ -280,19 +289,35 @@ func TestKilledAndResumed(t *testing.T) {
 		}
 		done := make(chan error, 1)
 		go func() { done <- cmd.Wait() }()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("run %d failed: %v %s", attempt, err, errb.String())
+		// The first 30 runs are killed at a random moment after each has
+		// written a new checkpoint, so every run makes some progress and the
+		// kills land anywhere between checkpoints. The last run finishes.
+		killed := false
+		if kills < 30 {
+			for !killed {
+				select {
+				case err := <-done:
+					done <- err
+				case <-time.After(2 * time.Millisecond):
+					if !stamp().Equal(before) {
+						time.Sleep(time.Duration(rng.IntN(40)) * time.Millisecond)
+						killed = cmd.Process.Signal(syscall.SIGKILL) == nil
+					}
+					continue
+				}
+				break
 			}
-			last = result{stderr: errb.Bytes()}
-			json.Unmarshal(last.stderr, &last.sum)
-		case <-time.After(killAfter(rng, kills)):
-			cmd.Process.Signal(syscall.SIGKILL)
-			<-done
+		}
+		err := <-done
+		if killed && err != nil {
 			kills++
 			continue
 		}
+		if err != nil {
+			t.Fatalf("run %d failed: %v %s", attempt, err, errb.String())
+		}
+		last = result{stderr: errb.Bytes()}
+		json.Unmarshal(last.stderr, &last.sum)
 		break
 	}
 	x, _ := os.ReadFile(clean)
@@ -308,22 +333,22 @@ func TestKilledAndResumed(t *testing.T) {
 	if last.sum.Hash != ref.sum.Hash || last.sum.Hash != sha(y) || last.sum.Invalid != 1 || last.sum.Late != ref.sum.Late {
 		t.Fatalf("summary %s, want hash %s", last.stderr, ref.sum.Hash)
 	}
-	if kills < 3 {
-		t.Fatalf("only %d kills; the test proves nothing", kills)
+	// With -remember, the record log was compacted along the way: one log
+	// is left, much smaller than one record per event.
+	logs, _ := filepath.Glob(filepath.Join(state, "released-*.ndjson"))
+	if len(logs) != 1 {
+		t.Fatalf("%d record logs left: %v", len(logs), logs)
+	}
+	if st, _ := os.Stat(logs[0]); st == nil || st.Size() > 3<<20 || logs[0] == filepath.Join(state, "released-1.ndjson") {
+		t.Fatalf("the record log %v wasn't compacted", logs)
+	}
+	if kills != 30 {
+		t.Fatalf("%d kills, want 30", kills)
 	}
 	t.Logf("%d kills, %d events, %d ordered, hash %s", kills, len(order), ref.sum.Ordered, ref.sum.Hash)
 	if os.Getenv("INORDERLY_RECORD") != "" {
 		fmt.Printf("RECORD kill_resume kills=%d lines=%d ordered=%d late=%d identical=true\n", kills, len(order)+1, ref.sum.Ordered, ref.sum.Late)
 	}
-}
-
-// killAfter picks when to kill the next run: a random moment in its first
-// 400 ms for the first 30 runs, then never, so the last run finishes.
-func killAfter(rng *rand.Rand, kills int) time.Duration {
-	if kills >= 30 {
-		return time.Hour
-	}
-	return time.Duration(20+rng.IntN(380)) * time.Millisecond
 }
 
 // A producer written in Python, with its own JSON encoder, key order and
@@ -355,5 +380,70 @@ func TestPythonProducer(t *testing.T) {
 	}
 	if os.Getenv("INORDERLY_RECORD") != "" {
 		fmt.Printf("RECORD python_producer orders=4 events=20000 identical=true hash=%s\n", ref.sum.Hash)
+	}
+}
+
+func TestPathsAndFlagsChecked(t *testing.T) {
+	dir := t.TempDir()
+	in := write(t, dir, "in.ndjson", []byte(`{"id":"a","producer":"p","time":1}`+"\n"))
+	for _, args := range [][]string{
+		{"-in", in, "-out", in},
+		{"-in", in, "-out", filepath.Join(dir, "o"), "-rejects", filepath.Join(dir, "o")},
+		{"-in", in, "-rejects", in},
+	} {
+		if r := runCLI(t, nil, args...); r.code != 1 || !strings.Contains(string(r.stderr), "same file") && !strings.Contains(string(r.stderr), "both an input and an output") {
+			t.Fatalf("%v: %d %s", args, r.code, r.stderr)
+		}
+	}
+	for _, bad := range [][]string{{"-window", "-1"}, {"-remember", "-5"}, {"-hold", "-2"}} {
+		if r := runCLI(t, nil, bad...); r.code != 2 {
+			t.Fatalf("%v exited %d", bad, r.code)
+		}
+	}
+}
+
+func TestByteOrderMark(t *testing.T) {
+	r := runCLI(t, []byte("\xef\xbb\xbf"+`{"id":"a","producer":"p","time":1}`+"\n"))
+	if r.code != 0 || r.sum.Ordered != 1 || r.sum.Invalid != 0 {
+		t.Fatalf("%d %s", r.code, r.stderr)
+	}
+}
+
+func TestResumeRefusesChangedFiles(t *testing.T) {
+	dir := t.TempDir()
+	var lines []byte
+	for i := 0; i < 50; i++ {
+		lines = append(lines, fmt.Sprintf(`{"id":"e%d","producer":"p","time":%d}`+"\n", i, i)...)
+	}
+	in := write(t, dir, "in.ndjson", lines)
+	out := filepath.Join(dir, "out.ndjson")
+	state := filepath.Join(dir, "state")
+	args := []string{"-in", in, "-out", out, "-state", state, "-checkpoint-every", "10"}
+	if r := runCLI(t, nil, args...); r.code != 0 {
+		t.Fatal(string(r.stderr))
+	}
+	// A finished run whose output was since changed is refused.
+	os.WriteFile(out, []byte("tampered\n"), 0o644)
+	if r := runCLI(t, nil, args...); r.code == 0 || !strings.Contains(string(r.stderr), "has changed") {
+		t.Fatalf("%d %s", r.code, r.stderr)
+	}
+	// An unfinished checkpoint over an input that was since rewritten is
+	// refused rather than carried on in the wrong place.
+	os.RemoveAll(state)
+	cp := checkpoint{}
+	if r := runCLI(t, nil, args...); r.code != 0 {
+		t.Fatal(string(r.stderr))
+	}
+	b, _ := os.ReadFile(filepath.Join(state, "checkpoint.json"))
+	json.Unmarshal(b, &cp)
+	cp.Finished, cp.Summary = false, nil
+	cp.Engine = &inorderly.Snapshot{Format: 1, Partial: true}
+	cp.Offsets, cp.Lines, cp.Done = []int64{0}, []uint64{0}, []bool{false}
+	b, _ = json.Marshal(cp)
+	os.WriteFile(filepath.Join(state, "checkpoint.json"), b, 0o644)
+	time.Sleep(20 * time.Millisecond)
+	os.WriteFile(in, append(lines, lines[:40]...), 0o644)
+	if r := runCLI(t, nil, args...); r.code == 0 || !strings.Contains(string(r.stderr), "has changed since the checkpoint") {
+		t.Fatalf("%d %s", r.code, r.stderr)
 	}
 }

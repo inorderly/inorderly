@@ -32,7 +32,8 @@ One event per line, as JSON. Blank lines are skipped. Lines may end in `\n`
 or `\r\n`, and the last line needs no line ending. A line longer than 16 MiB
 is invalid. Unknown fields, a missing `producer` or `time`, a fraction where
 an integer belongs, a key repeated in one `data` object, or anything after the
-event on the same line make the line invalid.
+event on the same line make the line invalid. Keys must be spelled exactly,
+each once, and identities, producers and parents must be valid UTF-8.
 
 ```json
 {"id":"o-1001","producer":"checkout","time":1760000000123,"data":{"total":42.5}}
@@ -90,14 +91,23 @@ when any line was refused.
 ### The state directory
 
 `-state DIR` holds `checkpoint.json` (where each input had got to, how much
-output was written, and the held events) and `released.ndjson` (one record per
-event written, for spotting duplicates and parents after a restart). Every
-checkpoint first makes the output, the rejects and the record log durable,
-then replaces `checkpoint.json` by writing a new file and renaming it over
-the old one. Started again, `inorderly` cuts each file back to the checkpoint
-and carries on; anything written after the checkpoint is written again, the
-same. A finished run started again prints its summary and does nothing else.
-Starting with different inputs, output or settings is refused.
+output was written, and the held events) and a record log,
+`released-N.ndjson`, with one line per event written, for spotting duplicates
+and parents after a restart. Every checkpoint first makes the output, the
+rejects and the record log durable, then replaces `checkpoint.json` by writing
+a new file and renaming it over the old one. With `-remember`, the record log
+is rewritten from time to time with only what is still remembered, under the
+next number, and the old one is removed once a checkpoint names the new one.
+
+Started again, `inorderly` cuts each file back to the checkpoint and carries
+on; anything written after the checkpoint is written again, the same. It
+refuses to carry on if an input file's size or modification time has changed
+since the checkpoint, or if the inputs, outputs or settings differ. A finished
+run started again prints its summary and does nothing else, unless the output
+file has changed since, which is refused too.
+
+`-out` and `-rejects` can't be the same file, and neither can be an input.
+A UTF-8 byte-order mark at the start of an input is skipped.
 
 ## The Go packages
 
@@ -121,6 +131,7 @@ fmt.Println(o.Hash())
 | `(*Orderer).Hash()` | The replay hash so far. |
 | `(*Orderer).Stats()`, `Gaps()`, `Watermark()` | Counts, sequence gaps and the watermark. |
 | `(*Orderer).Snapshot()` | The whole state, to save. |
+| `(*Orderer).Remembered()` | The records of the released events still remembered. |
 | `(*Orderer).SnapshotHeld()` | The state without the remembered released events; keep each `Released.Record` yourself. |
 | `Restore(*Snapshot, []Record)` | An Orderer that carries on where the snapshot was taken. |
 | `ParseLine([]byte)` | One event from one NDJSON line, strictly. |

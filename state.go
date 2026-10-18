@@ -49,6 +49,19 @@ func (o *Orderer) SnapshotHeld() (*Snapshot, error) {
 	return o.snapshot(false)
 }
 
+// Remembered returns the records of the released events the Orderer still
+// remembers, sorted by identity. With Remember above 0 it can be far fewer
+// than every record kept since the start, so a caller using SnapshotHeld
+// can replace its own list with this one from time to time.
+func (o *Orderer) Remembered() []Record {
+	out := make([]Record, 0, len(o.released))
+	for id, r := range o.released {
+		out = append(out, Record{Ident: id, Time: r.time, Sum: hex.EncodeToString(r.sum[:])})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Ident < out[j].Ident })
+	return out
+}
+
 func (o *Orderer) snapshot(withReleased bool) (*Snapshot, error) {
 	if o.final {
 		return nil, ErrClosed
@@ -68,10 +81,7 @@ func (o *Orderer) snapshot(withReleased bool) (*Snapshot, error) {
 	}
 	sort.Slice(s.Pending, func(i, j int) bool { return s.Pending[i].Identity() < s.Pending[j].Identity() })
 	if withReleased {
-		for id, r := range o.released {
-			s.Released = append(s.Released, Record{Ident: id, Time: r.time, Sum: hex.EncodeToString(r.sum[:])})
-		}
-		sort.Slice(s.Released, func(i, j int) bool { return s.Released[i].Ident < s.Released[j].Ident })
+		s.Released = o.Remembered()
 	}
 	for p, v := range o.lastSeq {
 		s.LastSeq[p] = v

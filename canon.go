@@ -162,6 +162,26 @@ func appendString(b []byte, s string) []byte {
 	return append(b, '"')
 }
 
+// topLevel reads one JSON object and returns each member's value in
+// canonical form, by key. A repeated key, anything but an object, or
+// anything after it is an error.
+func topLevel(raw []byte) (map[string][]byte, error) {
+	p := canonParser{in: raw}
+	p.space()
+	if p.i >= len(p.in) || p.in[p.i] != '{' {
+		return nil, p.fail("expected an object")
+	}
+	members := map[string][]byte{}
+	if _, err := p.object(nil, 0, members); err != nil {
+		return nil, err
+	}
+	p.space()
+	if p.i != len(p.in) {
+		return nil, errors.New("there is more after the event object")
+	}
+	return members, nil
+}
+
 // canonParser reads JSON straight from bytes and writes the canonical form.
 type canonParser struct {
 	in []byte
@@ -194,7 +214,7 @@ func (p *canonParser) value(b []byte, depth int) ([]byte, error) {
 	}
 	switch c := p.in[p.i]; {
 	case c == '{':
-		return p.object(b, depth)
+		return p.object(b, depth, nil)
 	case c == '[':
 		p.i++
 		b = append(b, '[')
@@ -243,7 +263,9 @@ func (p *canonParser) value(b []byte, depth int) ([]byte, error) {
 	}
 }
 
-func (p *canonParser) object(b []byte, depth int) ([]byte, error) {
+// object reads an object; when collect isn't nil, it also gets every
+// member's canonical value by key.
+func (p *canonParser) object(b []byte, depth int, collect map[string][]byte) ([]byte, error) {
 	p.i++ // {
 	type member struct {
 		key string
@@ -293,6 +315,11 @@ func (p *canonParser) object(b []byte, depth int) ([]byte, error) {
 	for i := 1; i < len(members); i++ {
 		if members[i].key == members[i-1].key {
 			return nil, fmt.Errorf("the key %q appears twice in one object", members[i].key)
+		}
+	}
+	for _, m := range members {
+		if collect != nil {
+			collect[m.key] = m.val
 		}
 	}
 	b = append(b, '{')

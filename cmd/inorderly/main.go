@@ -116,6 +116,9 @@ func run(args []string) (int, error) {
 	if fs.NArg() > 0 {
 		return 2, fmt.Errorf("unexpected argument %q; inputs go after -in", fs.Arg(0))
 	}
+	if *window < 0 || *remember < 0 || *hold < -1 {
+		return 2, errors.New("-window and -remember can't be negative, and -hold can't be below -1")
+	}
 	if *hold < 0 {
 		*hold = *window
 	}
@@ -192,7 +195,12 @@ type lineReader struct {
 	tooLong bool
 }
 
-func (l *lineReader) next() ([]byte, error) {
+func (l *lineReader) next() (line []byte, err error) {
+	defer func() {
+		if err == nil && l.line == 1 {
+			line = bytes.TrimPrefix(line, []byte("\xef\xbb\xbf")) // a byte-order mark
+		}
+	}()
 	var buf []byte
 	l.tooLong = false
 	for {
