@@ -59,3 +59,26 @@ func TestSameEventFromTwoEncoders(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// FuzzCanonicalMatchesEncodingJSON checks the byte-level canonical form
+// against the same rewrite done with encoding/json: both accept the same
+// inputs and write the same bytes.
+func FuzzCanonicalMatchesEncodingJSON(f *testing.F) {
+	for _, s := range []string{
+		`{"b":1,"a":[true,false,null,1.50,-2e3,0,-0.0e+1]}`, `"😀 \ud800 \udc00x é \/"`, `[[],{},""]`,
+		`{"a":{"b":{"c":[1,2,{"d":"e"}]}}}`, "\"\xff\xfe\"", `  [ 1 , 2 ]  `, `{"a":1,"a":2}`, `01`, `1.`, `-`, `"\u12"`,
+		`{"":0}`, `"\ud800A"`, `"􏿿"`, `[1,]`, `{"a" 1}`, `tru`, `nulll`, "\"a\tb\"", `1e5`, `"\"\\"`,
+	} {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, in []byte) {
+		fast, err1 := canonicalJSON(in)
+		slow, err2 := canonicalJSONSlow(in)
+		if (err1 == nil) != (err2 == nil) {
+			t.Fatalf("%q: fast error %v, slow error %v", in, err1, err2)
+		}
+		if err1 == nil && string(fast) != string(slow) {
+			t.Fatalf("%q: fast %q, slow %q", in, fast, slow)
+		}
+	})
+}
