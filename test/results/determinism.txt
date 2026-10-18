@@ -1,9 +1,9 @@
 # The determinism search: 10,000 random event sets, 20 arrival orders each
-# recorded 2026-10-18 08:33 UTC at a65765e, Inorderly 0.1.0, go1.24.7 linux/amd64
+# recorded 2026-10-18 09:42 UTC at f7730f1, Inorderly 0.1.1, go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
 # command: INORDERLY_ROUNDS=10000 go test -count=1 -run TestSameEventsSameOutput -v .
 
 === RUN   TestSameEventsSameOutput
---- PASS: TestSameEventsSameOutput (219.25s)
+--- PASS: TestSameEventsSameOutput (213.12s)
 PASS
-ok  	github.com/inorderly/inorderly	219.257s
+ok  	github.com/inorderly/inorderly	213.125s

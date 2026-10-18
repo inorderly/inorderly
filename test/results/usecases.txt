@@ -1,0 +1,149 @@
+# The use-case examples: webhooks, feeds, telemetry, audit
+# recorded 2026-10-18 09:47 UTC at f7730f1, Inorderly 0.1.1, go1.24.7 linux/amd64
+# Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
+# command: go run ./examples/usecases
+
+{
+  "arch": "amd64",
+  "audit": {
+    "accounts": 300,
+    "audit_duplicates_dropped": 2510,
+    "commands": [
+      "inorderly -window 600000 -in ledger.ndjson -out ledger.out.ndjson -rejects ledger.rejects.ndjson",
+      "inorderly -window 600000 -in billing.ndjson -out billing.out.ndjson -rejects billing.rejects.ndjson",
+      "inorderly -window 600000 -in branch-1.ndjson -in branch-2.ndjson -in branch-3.ndjson -in branch-4.ndjson -out audit.out.ndjson -rejects audit.rejects.ndjson"
+    ],
+    "config": {
+      "window": 600000,
+      "hold": 600000,
+      "remember": 0
+    },
+    "declined": 4019,
+    "export_repeats": 2510,
+    "hashes": {
+      "audit": "sha256:8fb9178619b327156a4c55f4356e5ff5b36e5e89446c427320efac99a4b0b151",
+      "billing": "sha256:8fb9178619b327156a4c55f4356e5ff5b36e5e89446c427320efac99a4b0b151",
+      "ledger": "sha256:8fb9178619b327156a4c55f4356e5ff5b36e5e89446c427320efac99a4b0b151"
+    },
+    "identical": true,
+    "naive_balances_differ": 107,
+    "naive_declined": {
+      "billing": 4005,
+      "ledger": 4010
+    },
+    "naive_reversals_before_original": {
+      "billing": 107,
+      "ledger": 1
+    },
+    "reversals": 929,
+    "reversals_stamped_before_original": 77,
+    "state": "sha256:a128adf49ccf0e554139dfbb017aeeb90bdecd87ec8f5d14d8dacaa28ce9f3c3",
+    "states": [
+      "sha256:a128adf49ccf0e554139dfbb017aeeb90bdecd87ec8f5d14d8dacaa28ce9f3c3",
+      "sha256:a128adf49ccf0e554139dfbb017aeeb90bdecd87ec8f5d14d8dacaa28ce9f3c3",
+      "sha256:a128adf49ccf0e554139dfbb017aeeb90bdecd87ec8f5d14d8dacaa28ce9f3c3"
+    ],
+    "transactions": 100929
+  },
+  "feeds": {
+    "commands": [
+      "inorderly -window 10000 -in live-1.ndjson -out live-1.out.ndjson -rejects live-1.rejects.ndjson",
+      "inorderly -window 10000 -in live-2.ndjson -out live-2.out.ndjson -rejects live-2.rejects.ndjson",
+      "inorderly -window 10000 -in line-a.ndjson -in line-b.ndjson -out capture.out.ndjson -rejects capture.rejects.ndjson"
+    ],
+    "config": {
+      "window": 10000,
+      "hold": 10000,
+      "remember": 0
+    },
+    "duplicates_dropped": 143458,
+    "gaps": 84,
+    "hashes": {
+      "capture": "sha256:6fa20783ceafa60f92b095be8a3d66216ff1db4c68eae55bf0ea69806714e96b",
+      "live-1": "sha256:6fa20783ceafa60f92b095be8a3d66216ff1db4c68eae55bf0ea69806714e96b",
+      "live-2": "sha256:6fa20783ceafa60f92b095be8a3d66216ff1db4c68eae55bf0ea69806714e96b"
+    },
+    "identical": true,
+    "line_a": 146602,
+    "line_b": 146772,
+    "lost_on_both": 84,
+    "naive_out_of_sequence": {
+      "live-1": 383,
+      "live-2": 425
+    },
+    "on_both_lines": 143458,
+    "ordered": 149916,
+    "outage_a_ms": 4000,
+    "outage_b_ms": 3000,
+    "ticks": 150000
+  },
+  "go": "go1.24.7",
+  "os": "linux",
+  "telemetry": {
+    "commands": [
+      "inorderly -window 900000 -in uploads-1.ndjson -out uploads-1.out.ndjson -rejects uploads-1.rejects.ndjson",
+      "inorderly -window 900000 -in uploads-2.ndjson -out uploads-2.out.ndjson -rejects uploads-2.rejects.ndjson",
+      "inorderly -window 900000 -in uploads-3.ndjson -out uploads-3.out.ndjson -rejects uploads-3.rejects.ndjson"
+    ],
+    "config": {
+      "window": 900000,
+      "hold": 900000,
+      "remember": 0
+    },
+    "devices": 200,
+    "gaps": 639,
+    "hashes": {
+      "uploads-1": "sha256:3ba8ff6976333cb547b1a3fe94435e6ea920c6b07bc52984c0e0e88846225251",
+      "uploads-2": "sha256:3ba8ff6976333cb547b1a3fe94435e6ea920c6b07bc52984c0e0e88846225251",
+      "uploads-3": "sha256:3ba8ff6976333cb547b1a3fe94435e6ea920c6b07bc52984c0e0e88846225251"
+    },
+    "identical": true,
+    "lost_in_transit": 634,
+    "minutes": 182,
+    "missing_in_gaps": 1606,
+    "naive_dropped": [
+      4183,
+      4335,
+      4298
+    ],
+    "naive_minutes_differ_between_runs": 157,
+    "naive_minutes_wrong": 158,
+    "ordered": 214394,
+    "readings": 216000,
+    "refused_late": 972
+  },
+  "version": "0.1.1",
+  "webhooks": {
+    "commands": [
+      "inorderly -window 60000 -in deliveries-1.ndjson -out deliveries-1.out.ndjson -rejects deliveries-1.rejects.ndjson",
+      "inorderly -window 60000 -in deliveries-2.ndjson -out deliveries-2.out.ndjson -rejects deliveries-2.rejects.ndjson",
+      "inorderly -window 60000 -in deliveries-3.ndjson -out deliveries-3.out.ndjson -rejects deliveries-3.rejects.ndjson"
+    ],
+    "config": {
+      "window": 60000,
+      "hold": 60000,
+      "remember": 0
+    },
+    "deliveries": 70920,
+    "duplicates_dropped": 10920,
+    "events": 60000,
+    "hashes": {
+      "deliveries-1": "sha256:357e625b19d00b3a3337ecfad7387e585b294e83e9bf7ac721bab97cafff610a",
+      "deliveries-2": "sha256:357e625b19d00b3a3337ecfad7387e585b294e83e9bf7ac721bab97cafff610a",
+      "deliveries-3": "sha256:357e625b19d00b3a3337ecfad7387e585b294e83e9bf7ac721bab97cafff610a"
+    },
+    "identical": true,
+    "naive_child_before_parent": 205,
+    "naive_overcount_cents": 35000623,
+    "naive_revenue_cents": 233678413,
+    "ordered": 60000,
+    "orders": 20000,
+    "payments_stamped_before_order": 3487,
+    "retries": {
+      "deliveries-1": 10920,
+      "deliveries-2": 10678,
+      "deliveries-3": 10793
+    },
+    "revenue_cents": 198677790
+  }
+}

@@ -1,5 +1,5 @@
 # Every test, verbose
-# recorded 2026-10-18 08:32 UTC at a65765e, Inorderly 0.1.0, go1.24.7 linux/amd64
+# recorded 2026-10-18 09:42 UTC at f7730f1, Inorderly 0.1.1, go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
 # command: INORDERLY_RECORD=1 go test -count=1 -v ./...
 
@@ -36,9 +36,9 @@
 === RUN   TestExtremeTimes
 --- PASS: TestExtremeTimes (0.00s)
 === RUN   TestSameEventsSameOutput
---- PASS: TestSameEventsSameOutput (15.25s)
+--- PASS: TestSameEventsSameOutput (10.28s)
 === RUN   TestKeysOnlyGoUp
---- PASS: TestKeysOnlyGoUp (0.13s)
+--- PASS: TestKeysOnlyGoUp (0.12s)
 === RUN   TestRestoreRefusesDamage
 --- PASS: TestRestoreRefusesDamage (0.00s)
 === RUN   TestInvalidUTF8Refused
@@ -46,9 +46,9 @@
 === RUN   TestParseLineKeysExactly
 --- PASS: TestParseLineKeysExactly (0.00s)
 === RUN   TestManyChildrenOfOneMissingParent
---- PASS: TestManyChildrenOfOneMissingParent (1.04s)
+--- PASS: TestManyChildrenOfOneMissingParent (2.07s)
 === RUN   TestLongInvertedChain
---- PASS: TestLongInvertedChain (0.10s)
+--- PASS: TestLongInvertedChain (0.29s)
 === RUN   FuzzCanonicalMatchesEncodingJSON
 === RUN   FuzzCanonicalMatchesEncodingJSON/seed#0
 === RUN   FuzzCanonicalMatchesEncodingJSON/seed#1
@@ -94,36 +94,49 @@
     --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#19 (0.00s)
     --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#20 (0.00s)
 PASS
-ok  	github.com/inorderly/inorderly	16.584s
+ok  	github.com/inorderly/inorderly	12.813s
 === RUN   TestShuffledInputsGiveTheSameOutput
---- PASS: TestShuffledInputsGiveTheSameOutput (0.98s)
+--- PASS: TestShuffledInputsGiveTheSameOutput (0.74s)
 === RUN   TestLineEndingsBlankLinesAndNoFinalNewline
---- PASS: TestLineEndingsBlankLinesAndNoFinalNewline (0.01s)
+--- PASS: TestLineEndingsBlankLinesAndNoFinalNewline (0.00s)
 === RUN   TestRejectsAndStrict
---- PASS: TestRejectsAndStrict (0.03s)
+--- PASS: TestRejectsAndStrict (0.01s)
 === RUN   TestOverLongLineIsRejected
---- PASS: TestOverLongLineIsRejected (0.21s)
+--- PASS: TestOverLongLineIsRejected (0.11s)
 === RUN   TestABFeedMerge
---- PASS: TestABFeedMerge (0.95s)
+--- PASS: TestABFeedMerge (0.64s)
 === RUN   TestStateFlags
---- PASS: TestStateFlags (0.04s)
+--- PASS: TestStateFlags (0.02s)
 === RUN   TestVersion
 --- PASS: TestVersion (0.00s)
 === RUN   TestKilledAndResumed
-    main_test.go:348: 30 kills, 240350 events, 120000 ordered, hash sha256:40c6b3a15f32933c79512d152be5d0a3a216543c68cc7f4aa246d1d9b711d661
+    main_test.go:349: 30 kills, 240350 events, 120000 ordered, hash sha256:40c6b3a15f32933c79512d152be5d0a3a216543c68cc7f4aa246d1d9b711d661
 RECORD kill_resume kills=30 lines=240351 ordered=120000 late=300 identical=true
---- PASS: TestKilledAndResumed (15.10s)
+--- PASS: TestKilledAndResumed (9.68s)
 === RUN   TestPythonProducer
 RECORD python_producer orders=4 events=20000 identical=true hash=sha256:d776c3310abf5483ce9b7d122aa83dc9b46d4773908c1c3805137427320b8837
---- PASS: TestPythonProducer (6.75s)
+--- PASS: TestPythonProducer (3.88s)
 === RUN   TestPathsAndFlagsChecked
---- PASS: TestPathsAndFlagsChecked (0.02s)
+--- PASS: TestPathsAndFlagsChecked (0.01s)
 === RUN   TestByteOrderMark
 --- PASS: TestByteOrderMark (0.00s)
 === RUN   TestResumeRefusesChangedFiles
---- PASS: TestResumeRefusesChangedFiles (0.07s)
+--- PASS: TestResumeRefusesChangedFiles (0.04s)
+=== RUN   TestUseCasesThroughTheCommand
+=== RUN   TestUseCasesThroughTheCommand/webhooks
+=== RUN   TestUseCasesThroughTheCommand/feeds
+=== RUN   TestUseCasesThroughTheCommand/telemetry
+=== RUN   TestUseCasesThroughTheCommand/audit
+--- PASS: TestUseCasesThroughTheCommand (27.17s)
+    --- PASS: TestUseCasesThroughTheCommand/webhooks (3.29s)
+    --- PASS: TestUseCasesThroughTheCommand/feeds (9.43s)
+    --- PASS: TestUseCasesThroughTheCommand/telemetry (8.56s)
+    --- PASS: TestUseCasesThroughTheCommand/audit (3.70s)
+=== RUN   TestCompactionAfterAnInterruptedCompaction
+--- PASS: TestCompactionAfterAnInterruptedCompaction (0.10s)
 PASS
-ok  	github.com/inorderly/inorderly/cmd/inorderly	24.629s
+ok  	github.com/inorderly/inorderly/cmd/inorderly	42.905s
+?   	github.com/inorderly/inorderly/examples/usecases	[no test files]
 === RUN   TestNowNeverGoesBack
 --- PASS: TestNowNeverGoesBack (0.00s)
 === RUN   TestObserveSortsAfterTheMessage
@@ -133,5 +146,21 @@ ok  	github.com/inorderly/inorderly/cmd/inorderly	24.629s
 === RUN   TestConcurrentStampsAreUnique
 --- PASS: TestConcurrentStampsAreUnique (0.01s)
 PASS
-ok  	github.com/inorderly/inorderly/hlc	0.009s
+ok  	github.com/inorderly/inorderly/hlc	0.010s
 ?   	github.com/inorderly/inorderly/internal/scenario	[no test files]
+=== RUN   TestUseCases
+=== RUN   TestUseCases/webhooks
+    usecase_test.go:23: {"config":{"window":60000,"hold":60000,"remember":0},"deliveries":70920,"duplicates_dropped":10920,"events":60000,"hashes":{"deliveries-1":"sha256:357e625b19d00b3a3337ecfad7387e585b294e83e9bf7ac721bab97cafff610a","deliveries-2":"sha256:357e625b19d00b3a3337ecfad7387e585b294e83e9bf7ac721bab97cafff610a","deliveries-3":"sha256:357e625b19d00b3a3337ecfad7387e585b294e83e9bf7ac721bab97cafff610a"},"identical":true,"naive_child_before_parent":205,"naive_overcount_cents":35000623,"naive_revenue_cents":233678413,"ordered":60000,"orders":20000,"payments_stamped_before_order":3487,"retries":{"deliveries-1":10920,"deliveries-2":10678,"deliveries-3":10793},"revenue_cents":198677790}
+=== RUN   TestUseCases/feeds
+    usecase_test.go:23: {"config":{"window":10000,"hold":10000,"remember":0},"duplicates_dropped":143458,"gaps":84,"hashes":{"capture":"sha256:6fa20783ceafa60f92b095be8a3d66216ff1db4c68eae55bf0ea69806714e96b","live-1":"sha256:6fa20783ceafa60f92b095be8a3d66216ff1db4c68eae55bf0ea69806714e96b","live-2":"sha256:6fa20783ceafa60f92b095be8a3d66216ff1db4c68eae55bf0ea69806714e96b"},"identical":true,"line_a":146602,"line_b":146772,"lost_on_both":84,"naive_out_of_sequence":{"live-1":383,"live-2":425},"on_both_lines":143458,"ordered":149916,"outage_a_ms":4000,"outage_b_ms":3000,"ticks":150000}
+=== RUN   TestUseCases/telemetry
+    usecase_test.go:23: {"config":{"window":900000,"hold":900000,"remember":0},"devices":200,"gaps":639,"hashes":{"uploads-1":"sha256:3ba8ff6976333cb547b1a3fe94435e6ea920c6b07bc52984c0e0e88846225251","uploads-2":"sha256:3ba8ff6976333cb547b1a3fe94435e6ea920c6b07bc52984c0e0e88846225251","uploads-3":"sha256:3ba8ff6976333cb547b1a3fe94435e6ea920c6b07bc52984c0e0e88846225251"},"identical":true,"lost_in_transit":634,"minutes":182,"missing_in_gaps":1606,"naive_dropped":[4183,4335,4298],"naive_minutes_differ_between_runs":157,"naive_minutes_wrong":158,"ordered":214394,"readings":216000,"refused_late":972}
+=== RUN   TestUseCases/audit
+    usecase_test.go:23: {"accounts":300,"audit_duplicates_dropped":2510,"config":{"window":600000,"hold":600000,"remember":0},"declined":4019,"export_repeats":2510,"hashes":{"audit":"sha256:8fb9178619b327156a4c55f4356e5ff5b36e5e89446c427320efac99a4b0b151","billing":"sha256:8fb9178619b327156a4c55f4356e5ff5b36e5e89446c427320efac99a4b0b151","ledger":"sha256:8fb9178619b327156a4c55f4356e5ff5b36e5e89446c427320efac99a4b0b151"},"identical":true,"naive_balances_differ":107,"naive_declined":{"billing":4005,"ledger":4010},"naive_reversals_before_original":{"billing":107,"ledger":1},"reversals":929,"reversals_stamped_before_original":77,"state":"sha256:a128adf49ccf0e554139dfbb017aeeb90bdecd87ec8f5d14d8dacaa28ce9f3c3","states":["sha256:a128adf49ccf0e554139dfbb017aeeb90bdecd87ec8f5d14d8dacaa28ce9f3c3","sha256:a128adf49ccf0e554139dfbb017aeeb90bdecd87ec8f5d14d8dacaa28ce9f3c3","sha256:a128adf49ccf0e554139dfbb017aeeb90bdecd87ec8f5d14d8dacaa28ce9f3c3"],"transactions":100929}
+--- PASS: TestUseCases (21.26s)
+    --- PASS: TestUseCases/webhooks (1.66s)
+    --- PASS: TestUseCases/feeds (3.55s)
+    --- PASS: TestUseCases/telemetry (6.27s)
+    --- PASS: TestUseCases/audit (7.71s)
+PASS
+ok  	github.com/inorderly/inorderly/internal/usecase	21.299s
