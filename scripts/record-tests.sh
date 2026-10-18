@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Runs every test, the long determinism search, the race detector, the
-# release plan's cases, the self-checking demo and the smoke check on a
-# static release-style binary, and writes the output to test/results/ with
-# a note of the machine they ran on. The numbers in the README and on
-# inorderly.com come from these files.
+# release plan's cases, the self-checking demo, the use-case examples and
+# the smoke check on a static release-style binary, and writes the output
+# to test/results/ with a note of the machine they ran on. The numbers in
+# the README and on inorderly.com come from these files.
 #
 #   sh scripts/record-tests.sh
 #
@@ -52,6 +52,10 @@ cmd="python3 -B -m unittest discover -s scripts -p *_test.py -v"
 # is the raw numbers.
 go build -o "$work/inorderly" ./cmd/inorderly
 "$work/inorderly" demo > "$out/demo.json" 2>"$work/demo.log" || { cat "$work/demo.log" >&2; exit 1; }
+
+# The four use-case examples behind the posts on inorderly.com.
+cmd="go run ./examples/usecases"
+{ header "The use-case examples: webhooks, feeds, telemetry, audit" "$cmd"; $cmd 2>/dev/null; } > "$out/usecases.txt"
 
 mkdir "$work/bin"
 CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o "$work/bin/inorderly" ./cmd/inorderly

@@ -83,16 +83,26 @@ cycles of parents and what counts as missing.
 
 ## Things it's for
 
+Four worked examples in [examples/usecases](examples/usecases) show these
+with realistic data, each delivered in several arrival orders and set beside
+the consumer people usually write by hand. Run them with
+`go run ./examples/usecases`.
+
+- **Webhooks and retries.** 20,000 orders with payments, refunds and
+  shipments, retried by the provider and stamped by clocks that disagree.
+  Totals come out exact, every payment after its order, whatever the
+  delivery order.
 - **Merging redundant feeds.** Two copies of a market data feed, each missing
   different ticks: read both with `-in a.ndjson -in b.ndjson`, and every tick
   that reached either copy comes out once, in order. Ticks lost from both are
   reported as gaps.
-- **Replayable processing.** Run yesterday's events through again and get
-  yesterday's output, with the hash to prove it.
-- **Webhooks and retries.** Dedupe and order deliveries from providers that
-  retry and don't promise order.
-- **Causal order across services.** An order, its payment and its shipment
-  from three services come out parent first, even when the clocks disagree.
+- **Sensor telemetry.** Devices with bad clocks, batching gateways and
+  outages. Backlogs inside the window are ordered, older readings are refused
+  and reported, lost readings show up as gaps, and per-minute averages come
+  out the same on every run.
+- **Audit and replay.** A ledger and a billing system that get the same
+  transactions in different orders end with the same balances, and an
+  auditor replaying the branch logs gets the same replay hash.
 
 ## Long runs and crashes
 
@@ -140,6 +150,9 @@ written by `sh scripts/record-tests.sh`.
   with clocks behind their parent's), reports all 1,044 orphans,
   and merges two copies of a 100,000-tick feed, each missing about 5%,
   reporting exactly the 247 ticks lost from both.
+- **The use cases.** The four examples, each ordered in two or three arrival
+  orders from the library and again with the command from their files: one
+  hash per example.
 - **Another language.** A Python producer with its own JSON encoder, key
   order and escapes gives the same output from every arrival order.
 - **Speed.** On a two-core 2.1 GHz Xeon cloud machine, one Orderer takes about 428,000 arriving events a second (2.3 µs each, two-thirds of them repeats) and writes about 143,000 ordered events a second.
@@ -151,7 +164,7 @@ detector on Linux.
 
 ```sh
 go test ./...
-sh scripts/record-tests.sh   # every test, the long search, the demo, the smoke check
+sh scripts/record-tests.sh   # every test, the long search, the demo, the use cases, the smoke check
 ```
 
 Releases are automated; [RELEASING.md](RELEASING.md) has the procedure.

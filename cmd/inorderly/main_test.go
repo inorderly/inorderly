@@ -21,6 +21,7 @@ import (
 
 	"github.com/inorderly/inorderly"
 	"github.com/inorderly/inorderly/internal/scenario"
+	"github.com/inorderly/inorderly/internal/usecase"
 )
 
 var bin string
@@ -445,5 +446,46 @@ func TestResumeRefusesChangedFiles(t *testing.T) {
 	os.WriteFile(in, append(lines, lines[:40]...), 0o644)
 	if r := runCLI(t, nil, args...); r.code == 0 || !strings.Contains(string(r.stderr), "has changed since the checkpoint") {
 		t.Fatalf("%d %s", r.code, r.stderr)
+	}
+}
+
+// The use-case examples' files, ordered by the command exactly as the
+// README's commands say, give the same output as the library, and every
+// arrival order of one example gives the same output.
+func TestUseCasesThroughTheCommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("the use cases take a few seconds")
+	}
+	dir := t.TempDir()
+	for _, c := range usecase.All() {
+		t.Run(c.Name, func(t *testing.T) {
+			if err := c.Write(dir); err != nil {
+				t.Fatal(err)
+			}
+			want, err := c.Order(c.Inputs[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, line := range c.Commands() {
+				args := append(strings.Fields(line)[1:], "-stats", "stats.json")
+				cmd := exec.Command(bin, args...)
+				cmd.Dir = filepath.Join(dir, c.Name)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("%s: %v\n%s", line, err, out)
+				}
+				var sum summary
+				b, err := os.ReadFile(filepath.Join(cmd.Dir, "stats.json"))
+				if err == nil {
+					err = json.Unmarshal(b, &sum)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if sum.Hash != want.Hash || sum.Ordered != want.Stats.Out || sum.Late != want.Stats.Late {
+					t.Fatalf("%s: hash %s, %d ordered, %d late; the library gave %s, %d, %d",
+						line, sum.Hash, sum.Ordered, sum.Late, want.Hash, want.Stats.Out, want.Stats.Late)
+				}
+			}
+		})
 	}
 }
