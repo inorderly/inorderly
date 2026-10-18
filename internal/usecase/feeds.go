@@ -68,19 +68,21 @@ func Feeds() *Case {
 	c.check = func(c *Case, runs []Run) (map[string]any, error) {
 		// A typical hand-written merge: pass on each tick the first time
 		// its number is seen.
-		last := map[string]uint64{}
-		seen := map[string]bool{}
-		outOfSequence := 0
-		for _, e := range c.Inputs[0].Arrivals() {
-			id := e.Identity()
-			if seen[id] {
-				continue
+		outOfSequence := map[string]int{}
+		for _, in := range c.Inputs[:2] {
+			last := map[string]uint64{}
+			seen := map[string]bool{}
+			for _, e := range in.Arrivals() {
+				id := e.Identity()
+				if seen[id] {
+					continue
+				}
+				seen[id] = true
+				if e.Seq < last[e.Producer] {
+					outOfSequence[in.Name]++
+				}
+				last[e.Producer] = max(last[e.Producer], e.Seq)
 			}
-			seen[id] = true
-			if e.Seq < last[e.Producer] {
-				outOfSequence++
-			}
-			last[e.Producer] = max(last[e.Producer], e.Seq)
 		}
 		var gaps []inorderly.Gap
 		for _, r := range runs {
