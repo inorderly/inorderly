@@ -621,9 +621,12 @@ func TestManyChildrenOfOneMissingParent(t *testing.T) {
 		}
 		return time.Since(start).Seconds()
 	}
-	small, large := timed(20000), timed(80000)
-	if large > 12*small+0.5 {
-		t.Fatalf("20,000 children took %.2fs but 80,000 took %.2fs", small, large)
+	// Sixteen times the children: linear costs about 16 times the time,
+	// quadratic about 256. The best of three runs keeps a busy machine from
+	// deciding it.
+	small, large := best(func() float64 { return timed(5000) }), best(func() float64 { return timed(80000) })
+	if large > 64*small+0.5 {
+		t.Fatalf("5,000 children took %.3fs but 80,000 took %.3fs", small, large)
 	}
 }
 
@@ -647,7 +650,7 @@ func TestLongInvertedChain(t *testing.T) {
 		rel = append(rel, o.Flush()...)
 		return rel, time.Since(start).Seconds()
 	}
-	rel, small := chain(2000)
+	rel, _ := chain(2000)
 	// The first event's key is one point long, so links 1 to MaxChain-1 fit.
 	for i := 1; i < MaxChain; i++ {
 		if rel[i].Event.Parents[0] != rel[i-1].Event.ID || len(rel[i].Missing) != 0 {
@@ -663,8 +666,20 @@ func TestLongInvertedChain(t *testing.T) {
 	if missing != len(rel)-MaxChain-1 {
 		t.Fatalf("%d links reported a missing parent, want %d", missing, len(rel)-MaxChain-1)
 	}
-	_, large := chain(8000)
-	if large > 12*small+0.5 {
-		t.Fatalf("a 2,000-link chain took %.2fs but 8,000 took %.2fs", small, large)
+	small := best(func() float64 { _, s := chain(1000); return s })
+	large := best(func() float64 { _, s := chain(16000); return s })
+	if large > 64*small+0.5 {
+		t.Fatalf("a 1,000-link chain took %.3fs but 16,000 took %.3fs", small, large)
 	}
+}
+
+// best runs f three times and returns its shortest time.
+func best(f func() float64) float64 {
+	m := f()
+	for i := 0; i < 2; i++ {
+		if x := f(); x < m {
+			m = x
+		}
+	}
+	return m
 }
