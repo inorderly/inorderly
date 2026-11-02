@@ -302,3 +302,15 @@ func Ensure(ctx context.Context, e *Endpoint) error {
 	}
 	return nil
 }
+
+// Purge empties a Redis stream or a NATS stream; tests use it. Kafka topics
+// are left alone (errors.ErrUnsupported).
+func Purge(ctx context.Context, e *Endpoint) error {
+	switch e.Kind {
+	case "redis":
+		return redisPurge(ctx, e)
+	case "nats":
+		return natsPurge(ctx, e)
+	}
+	return errors.ErrUnsupported
+}

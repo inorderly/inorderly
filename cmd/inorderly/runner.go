@@ -328,6 +328,18 @@ func newRunner(ctx context.Context, cfg inorderly.Config, ins []string, out, rej
 				r.close()
 				return nil, err
 			}
+			// Nothing after the mark: the output must still end at the
+			// checkpoint's line, not have been emptied or made again.
+			if len(bout.stored) == 0 && old.OutPos > 0 {
+				pos, _, err := sink.Last(ctx)
+				if err == nil && pos != old.OutPos {
+					err = fmt.Errorf("%s ends at pos %d, but the checkpoint in %s says pos %d was stored; it was emptied or changed", outName, pos, stateDir, old.OutPos)
+				}
+				if err != nil {
+					r.close()
+					return nil, err
+				}
+			}
 		}
 		bout.from, bout.fromPos, bout.durPos = bout.mark, bout.base, bout.base
 	}

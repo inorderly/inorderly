@@ -471,3 +471,13 @@ func readLimited(r *bufio.Reader, max int) (string, error) {
 		return string(b), err
 	}
 }
+
+func redisPurge(ctx context.Context, e *Endpoint) error {
+	rc, err := dialRedis(ctx, e)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	_, err = rc.do(30*time.Second, "DEL", e.Name)
+	return err
+}

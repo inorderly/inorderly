@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -399,6 +400,7 @@ func TestBrokerOutputCheckedOnRestart(t *testing.T) {
 		for _, tc := range []struct{ name, plant, want string }{
 			{"gap", `{"pos":%d,"producer":"x","seq":1,"time":1}`, "missing or there twice"},
 			{"different", `{"pos":%d,"producer":"x","seq":1,"time":1}`, "different line"},
+			{"emptied", "", "emptied or changed"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				dir := t.TempDir()
@@ -430,7 +432,16 @@ func TestBrokerOutputCheckedOnRestart(t *testing.T) {
 				if tc.name == "gap" {
 					next++
 				}
-				produce(t, uo, [][]byte{[]byte(fmt.Sprintf(tc.plant, next))})
+				if tc.plant == "" {
+					e, _ := broker.Parse(uo)
+					if err := broker.Purge(context.Background(), e); errors.Is(err, errors.ErrUnsupported) {
+						t.Skip("this broker isn't purged by the tests")
+					} else if err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					produce(t, uo, [][]byte{[]byte(fmt.Sprintf(tc.plant, next))})
+				}
 				produce(t, ui, a[1000:])
 				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 				defer cancel()

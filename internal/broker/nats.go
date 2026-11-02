@@ -445,7 +445,7 @@ func (s *natsSource) pendingNow() (uint64, bool, error) {
 }
 
 func (s *natsSource) Next(ctx context.Context, wait time.Duration) (Message, error) {
-	troubles := 0
+	troubles, empty := 0, 0
 	for len(s.buf) == 0 {
 		if err := ctx.Err(); err != nil {
 			return Message{}, err
@@ -474,6 +474,9 @@ func (s *natsSource) Next(ctx context.Context, wait time.Duration) (Message, err
 				s.done = true
 				continue
 			}
+			if empty++; empty > 120 {
+				return Message{}, fmt.Errorf("nats stream %s: %d messages are pending but none come", s.e.Name, n)
+			}
 			if !alive {
 				if err := s.create(); err != nil {
 					return Message{}, err
@@ -485,7 +488,11 @@ func (s *natsSource) Next(ctx context.Context, wait time.Duration) (Message, err
 			if troubles++; troubles > 50 {
 				return Message{}, fmt.Errorf("nats stream %s: %s %s, again and again", s.e.Name, st.status, st.desc)
 			}
-			if strings.Contains(strings.ToLower(st.desc), "deleted") {
+			_, alive, err := s.pendingNow()
+			if err != nil {
+				return Message{}, fmt.Errorf("nats stream %s: %v", s.e.Name, err)
+			}
+			if !alive {
 				if err := s.create(); err != nil {
 					return Message{}, err
 				}
@@ -724,4 +731,14 @@ func natsEnsure(ctx context.Context, e *Endpoint) error {
 		return fmt.Errorf("nats stream %s: %v", e.Name, err)
 	}
 	return nil
+}
+
+func natsPurge(ctx context.Context, e *Endpoint) error {
+	nc, err := dialNATS(ctx, e)
+	if err != nil {
+		return err
+	}
+	defer nc.Close()
+	var v struct{}
+	return nc.api("STREAM.PURGE."+e.Name, nil, &v)
 }

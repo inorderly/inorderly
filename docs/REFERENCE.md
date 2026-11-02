@@ -167,7 +167,11 @@ on from the checkpoint with nothing missing or repeated, and each must be the
 line the restarted run makes at that `pos`; those are not written again. When
 a run ends, it reads back everything written since it started and checks the
 same way. If any check fails, the run stops with an error rather than leave
-a gap, a repeat or someone else's line in the output.
+a gap, a repeat or someone else's line in the output. An output found emptied
+since the checkpoint stops it too. The final check reads the run's output
+back once, so a bounded run to a broker reads about as much as it writes; the
+lines a restart finds past the checkpoint are held in memory while it checks
+them, at most what was written between two checkpoints.
 
 So without `-follow`, a run killed at any moment, with brokers on both ends,
 ends with the output an uninterrupted run would have written, each line once,
