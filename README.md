@@ -183,7 +183,7 @@ written by `sh scripts/record-tests.sh`.
   hash per example.
 - **Another language.** A Python producer with its own JSON encoder, key
   order and escapes gives the same output from every arrival order.
-- **Speed.** On a two-core 2.1 GHz Xeon cloud machine, one Orderer takes about 344,000 arriving events a second (2.9 µs each, two-thirds of them repeats) and writes about 115,000 ordered events a second. Shared cloud machines vary from day to day; the recording for 0.1.0, on the same kind of machine, measured about 428,000.
+- **Speed.** On a two-core 2.3 GHz Xeon cloud machine, one Orderer takes about 563,000 arriving events a second (1.8 µs each, two-thirds of them repeats) and writes about 188,000 ordered events a second. Shared cloud machines vary from day to day; the recording for 0.1.1, on a 2.1 GHz machine of the same kind, measured about 344,000.
 
 The tests run on Linux, macOS and Windows on every push, with the race
 detector on Linux.

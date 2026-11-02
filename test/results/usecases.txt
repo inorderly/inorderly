@@ -1,6 +1,6 @@
 # The use-case examples: webhooks, feeds, telemetry, audit
-# recorded 2026-10-18 09:47 UTC at f7730f1, Inorderly 0.1.1, go1.24.7 linux/amd64
-# Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
+# recorded 2026-11-02 08:09 UTC at acb57a5, Inorderly 0.2.0, go1.24.7 linux/amd64
+# Linux 6.18.44-fc-v185, Intel(R) Xeon(R) Processor @ 2.30GHz, 2 CPUs
 # command: go run ./examples/usecases
 
 {
@@ -112,7 +112,7 @@
     "readings": 216000,
     "refused_late": 972
   },
-  "version": "0.1.1",
+  "version": "0.2.0",
   "webhooks": {
     "commands": [
       "inorderly -window 60000 -in deliveries-1.ndjson -out deliveries-1.out.ndjson -rejects deliveries-1.rejects.ndjson",

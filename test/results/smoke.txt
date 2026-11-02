@@ -1,11 +1,13 @@
 # The release smoke check on a static Linux binary built as the release workflow builds it
-# recorded 2026-10-18 09:47 UTC at f7730f1, Inorderly 0.1.1, go1.24.7 linux/amd64
-# Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
+# recorded 2026-11-02 08:09 UTC at acb57a5, Inorderly 0.2.0, go1.24.7 linux/amd64
+# Linux 6.18.44-fc-v185, Intel(R) Xeon(R) Processor @ 2.30GHz, 2 CPUs
 # command: python3 scripts/smoke.py BIN
 
-inorderly: 0.1.1 linux/amd64 revision f7730f16934b
+inorderly: 0.2.0 linux/amd64 revision acb57a5ee60e
 four shuffled orders with duplicates, one output: passed
 rejects and -strict: passed
+-window-for and -late: passed
+an unreachable broker is a clean error: passed
 killed 3 times and resumed, same output: passed
 self-checking demo: passed
 smoke check passed

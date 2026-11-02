@@ -1,11 +1,12 @@
 # Every test with the race detector (short determinism search)
-# recorded 2026-10-18 09:46 UTC at f7730f1, Inorderly 0.1.1, go1.24.7 linux/amd64
-# Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
+# recorded 2026-11-02 08:08 UTC at acb57a5, Inorderly 0.2.0, go1.24.7 linux/amd64
+# Linux 6.18.44-fc-v185, Intel(R) Xeon(R) Processor @ 2.30GHz, 2 CPUs
 # command: go test -race -short -count=1 ./...
 
-ok  	github.com/inorderly/inorderly	18.201s
-ok  	github.com/inorderly/inorderly/cmd/inorderly	26.363s
+ok  	github.com/inorderly/inorderly	13.144s
+ok  	github.com/inorderly/inorderly/cmd/inorderly	51.655s
 ?   	github.com/inorderly/inorderly/examples/usecases	[no test files]
-ok  	github.com/inorderly/inorderly/hlc	1.049s
+ok  	github.com/inorderly/inorderly/hlc	1.047s
+ok  	github.com/inorderly/inorderly/internal/broker	1.022s
 ?   	github.com/inorderly/inorderly/internal/scenario	[no test files]
-ok  	github.com/inorderly/inorderly/internal/usecase	1.018s
+ok  	github.com/inorderly/inorderly/internal/usecase	1.007s

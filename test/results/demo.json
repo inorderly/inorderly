@@ -1,5 +1,5 @@
 {
-  "version": "0.1.1",
+  "version": "0.2.0",
   "go": "go1.24.7",
   "os": "linux",
   "arch": "amd64",
@@ -53,10 +53,10 @@
   "throughput": {
     "pushes": 299814,
     "ordered": 100000,
-    "seconds": 0.871740731,
-    "pushes_per_second": 343925.65282119415,
-    "ordered_per_second": 114713.00633766073,
-    "nanoseconds_per_push": 2907.6051518608206
+    "seconds": 0.532961732,
+    "pushes_per_second": 562543.2033833154,
+    "ordered_per_second": 187630.73218172445,
+    "nanoseconds_per_push": 1777.6412442380943
   },
   "passed": true,
   "failures": []

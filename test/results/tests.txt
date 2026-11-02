@@ -1,6 +1,6 @@
 # Every test, verbose
-# recorded 2026-10-18 09:42 UTC at f7730f1, Inorderly 0.1.1, go1.24.7 linux/amd64
-# Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
+# recorded 2026-11-02 08:04 UTC at acb57a5, Inorderly 0.2.0, go1.24.7 linux/amd64
+# Linux 6.18.44-fc-v185, Intel(R) Xeon(R) Processor @ 2.30GHz, 2 CPUs
 # command: INORDERLY_RECORD=1 go test -count=1 -v ./...
 
 === RUN   TestCanonicalJSON
@@ -16,7 +16,7 @@
 === RUN   TestInvalidEvents
 --- PASS: TestInvalidEvents (0.00s)
 === RUN   TestParseLine
---- PASS: TestParseLine (0.04s)
+--- PASS: TestParseLine (0.02s)
 === RUN   TestCanonicalEscapes
 --- PASS: TestCanonicalEscapes (0.00s)
 === RUN   TestParentsComeFirst
@@ -36,9 +36,9 @@
 === RUN   TestExtremeTimes
 --- PASS: TestExtremeTimes (0.00s)
 === RUN   TestSameEventsSameOutput
---- PASS: TestSameEventsSameOutput (10.28s)
+--- PASS: TestSameEventsSameOutput (5.44s)
 === RUN   TestKeysOnlyGoUp
---- PASS: TestKeysOnlyGoUp (0.12s)
+--- PASS: TestKeysOnlyGoUp (0.04s)
 === RUN   TestRestoreRefusesDamage
 --- PASS: TestRestoreRefusesDamage (0.00s)
 === RUN   TestInvalidUTF8Refused
@@ -46,9 +46,13 @@
 === RUN   TestParseLineKeysExactly
 --- PASS: TestParseLineKeysExactly (0.00s)
 === RUN   TestManyChildrenOfOneMissingParent
---- PASS: TestManyChildrenOfOneMissingParent (2.07s)
+--- PASS: TestManyChildrenOfOneMissingParent (1.13s)
 === RUN   TestLongInvertedChain
---- PASS: TestLongInvertedChain (0.29s)
+--- PASS: TestLongInvertedChain (0.22s)
+=== RUN   TestProducerWindowsSameOutput
+--- PASS: TestProducerWindowsSameOutput (2.78s)
+=== RUN   TestProducerWindowLateness
+--- PASS: TestProducerWindowLateness (0.00s)
 === RUN   FuzzCanonicalMatchesEncodingJSON
 === RUN   FuzzCanonicalMatchesEncodingJSON/seed#0
 === RUN   FuzzCanonicalMatchesEncodingJSON/seed#1
@@ -94,48 +98,110 @@
     --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#19 (0.00s)
     --- PASS: FuzzCanonicalMatchesEncodingJSON/seed#20 (0.00s)
 PASS
-ok  	github.com/inorderly/inorderly	12.813s
+ok  	github.com/inorderly/inorderly	9.621s
+=== RUN   TestBrokerInAndOut
+=== RUN   TestBrokerInAndOut/redis
+=== RUN   TestBrokerInAndOut/nats
+    broker_test.go:50: INORDERLY_TEST_NATS is not set
+=== RUN   TestBrokerInAndOut/kafka
+    broker_test.go:50: INORDERLY_TEST_KAFKA is not set
+--- PASS: TestBrokerInAndOut (0.24s)
+    --- PASS: TestBrokerInAndOut/redis (0.24s)
+    --- SKIP: TestBrokerInAndOut/nats (0.00s)
+    --- SKIP: TestBrokerInAndOut/kafka (0.00s)
+=== RUN   TestBrokerKilledAndResumed
+=== RUN   TestBrokerKilledAndResumed/redis
+    broker_test.go:255: 10 kills, 20000 ordered
+=== RUN   TestBrokerKilledAndResumed/nats
+    broker_test.go:50: INORDERLY_TEST_NATS is not set
+=== RUN   TestBrokerKilledAndResumed/kafka
+    broker_test.go:50: INORDERLY_TEST_KAFKA is not set
+--- PASS: TestBrokerKilledAndResumed (1.35s)
+    --- PASS: TestBrokerKilledAndResumed/redis (1.35s)
+    --- SKIP: TestBrokerKilledAndResumed/nats (0.00s)
+    --- SKIP: TestBrokerKilledAndResumed/kafka (0.00s)
+=== RUN   TestBrokerFollow
+=== RUN   TestBrokerFollow/redis
+=== RUN   TestBrokerFollow/nats
+    broker_test.go:50: INORDERLY_TEST_NATS is not set
+=== RUN   TestBrokerFollow/kafka
+    broker_test.go:50: INORDERLY_TEST_KAFKA is not set
+--- PASS: TestBrokerFollow (2.16s)
+    --- PASS: TestBrokerFollow/redis (2.16s)
+    --- SKIP: TestBrokerFollow/nats (0.00s)
+    --- SKIP: TestBrokerFollow/kafka (0.00s)
+=== RUN   TestBrokerOutputWithAnotherWriter
+=== RUN   TestBrokerOutputWithAnotherWriter/redis
+=== RUN   TestBrokerOutputWithAnotherWriter/nats
+    broker_test.go:50: INORDERLY_TEST_NATS is not set
+=== RUN   TestBrokerOutputWithAnotherWriter/kafka
+    broker_test.go:50: INORDERLY_TEST_KAFKA is not set
+--- PASS: TestBrokerOutputWithAnotherWriter (0.02s)
+    --- PASS: TestBrokerOutputWithAnotherWriter/redis (0.02s)
+    --- SKIP: TestBrokerOutputWithAnotherWriter/nats (0.00s)
+    --- SKIP: TestBrokerOutputWithAnotherWriter/kafka (0.00s)
+=== RUN   TestKafkaPartitions
+    broker_test.go:358: INORDERLY_TEST_KAFKA is not set
+--- SKIP: TestKafkaPartitions (0.00s)
+=== RUN   TestBrokerOutputCheckedOnRestart
+=== RUN   TestBrokerOutputCheckedOnRestart/redis
+=== RUN   TestBrokerOutputCheckedOnRestart/redis/gap
+=== RUN   TestBrokerOutputCheckedOnRestart/redis/different
+=== RUN   TestBrokerOutputCheckedOnRestart/redis/emptied
+=== RUN   TestBrokerOutputCheckedOnRestart/nats
+    broker_test.go:50: INORDERLY_TEST_NATS is not set
+=== RUN   TestBrokerOutputCheckedOnRestart/kafka
+    broker_test.go:50: INORDERLY_TEST_KAFKA is not set
+--- PASS: TestBrokerOutputCheckedOnRestart (30.85s)
+    --- PASS: TestBrokerOutputCheckedOnRestart/redis (30.85s)
+        --- PASS: TestBrokerOutputCheckedOnRestart/redis/gap (10.27s)
+        --- PASS: TestBrokerOutputCheckedOnRestart/redis/different (10.28s)
+        --- PASS: TestBrokerOutputCheckedOnRestart/redis/emptied (10.29s)
+    --- SKIP: TestBrokerOutputCheckedOnRestart/nats (0.00s)
+    --- SKIP: TestBrokerOutputCheckedOnRestart/kafka (0.00s)
 === RUN   TestShuffledInputsGiveTheSameOutput
---- PASS: TestShuffledInputsGiveTheSameOutput (0.74s)
+--- PASS: TestShuffledInputsGiveTheSameOutput (0.40s)
 === RUN   TestLineEndingsBlankLinesAndNoFinalNewline
 --- PASS: TestLineEndingsBlankLinesAndNoFinalNewline (0.00s)
 === RUN   TestRejectsAndStrict
 --- PASS: TestRejectsAndStrict (0.01s)
 === RUN   TestOverLongLineIsRejected
---- PASS: TestOverLongLineIsRejected (0.11s)
+--- PASS: TestOverLongLineIsRejected (0.15s)
 === RUN   TestABFeedMerge
---- PASS: TestABFeedMerge (0.64s)
+--- PASS: TestABFeedMerge (0.38s)
 === RUN   TestStateFlags
 --- PASS: TestStateFlags (0.02s)
 === RUN   TestVersion
 --- PASS: TestVersion (0.00s)
 === RUN   TestKilledAndResumed
-    main_test.go:349: 30 kills, 240350 events, 120000 ordered, hash sha256:40c6b3a15f32933c79512d152be5d0a3a216543c68cc7f4aa246d1d9b711d661
+    main_test.go:356: 30 kills, 240350 events, 120000 ordered, hash sha256:40c6b3a15f32933c79512d152be5d0a3a216543c68cc7f4aa246d1d9b711d661
 RECORD kill_resume kills=30 lines=240351 ordered=120000 late=300 identical=true
---- PASS: TestKilledAndResumed (9.68s)
+--- PASS: TestKilledAndResumed (5.64s)
 === RUN   TestPythonProducer
 RECORD python_producer orders=4 events=20000 identical=true hash=sha256:d776c3310abf5483ce9b7d122aa83dc9b46d4773908c1c3805137427320b8837
---- PASS: TestPythonProducer (3.88s)
+--- PASS: TestPythonProducer (2.62s)
 === RUN   TestPathsAndFlagsChecked
---- PASS: TestPathsAndFlagsChecked (0.01s)
+--- PASS: TestPathsAndFlagsChecked (0.02s)
 === RUN   TestByteOrderMark
 --- PASS: TestByteOrderMark (0.00s)
 === RUN   TestResumeRefusesChangedFiles
---- PASS: TestResumeRefusesChangedFiles (0.04s)
+--- PASS: TestResumeRefusesChangedFiles (0.05s)
 === RUN   TestUseCasesThroughTheCommand
 === RUN   TestUseCasesThroughTheCommand/webhooks
 === RUN   TestUseCasesThroughTheCommand/feeds
 === RUN   TestUseCasesThroughTheCommand/telemetry
 === RUN   TestUseCasesThroughTheCommand/audit
---- PASS: TestUseCasesThroughTheCommand (27.17s)
-    --- PASS: TestUseCasesThroughTheCommand/webhooks (3.29s)
-    --- PASS: TestUseCasesThroughTheCommand/feeds (9.43s)
-    --- PASS: TestUseCasesThroughTheCommand/telemetry (8.56s)
-    --- PASS: TestUseCasesThroughTheCommand/audit (3.70s)
+--- PASS: TestUseCasesThroughTheCommand (18.52s)
+    --- PASS: TestUseCasesThroughTheCommand/webhooks (1.96s)
+    --- PASS: TestUseCasesThroughTheCommand/feeds (5.39s)
+    --- PASS: TestUseCasesThroughTheCommand/telemetry (6.21s)
+    --- PASS: TestUseCasesThroughTheCommand/audit (3.02s)
 === RUN   TestCompactionAfterAnInterruptedCompaction
---- PASS: TestCompactionAfterAnInterruptedCompaction (0.10s)
+--- PASS: TestCompactionAfterAnInterruptedCompaction (0.07s)
+=== RUN   TestWindowForAndLateFile
+--- PASS: TestWindowForAndLateFile (0.07s)
 PASS
-ok  	github.com/inorderly/inorderly/cmd/inorderly	42.905s
+ok  	github.com/inorderly/inorderly/cmd/inorderly	63.143s
 ?   	github.com/inorderly/inorderly/examples/usecases	[no test files]
 === RUN   TestNowNeverGoesBack
 --- PASS: TestNowNeverGoesBack (0.00s)
@@ -147,6 +213,30 @@ ok  	github.com/inorderly/inorderly/cmd/inorderly	42.905s
 --- PASS: TestConcurrentStampsAreUnique (0.01s)
 PASS
 ok  	github.com/inorderly/inorderly/hlc	0.010s
+=== RUN   TestParse
+--- PASS: TestParse (0.00s)
+=== RUN   TestPosOf
+--- PASS: TestPosOf (0.00s)
+=== RUN   TestCRC32C
+--- PASS: TestCRC32C (0.00s)
+=== RUN   TestRecordBatchRoundTrip
+--- PASS: TestRecordBatchRoundTrip (0.00s)
+=== RUN   TestGzipControlAndOtherCodecs
+--- PASS: TestGzipControlAndOtherCodecs (0.00s)
+=== RUN   TestSCRAMSHA256
+--- PASS: TestSCRAMSHA256 (0.00s)
+=== RUN   TestAckSeq
+--- PASS: TestAckSeq (0.00s)
+=== RUN   TestNATSRead
+--- PASS: TestNATSRead (0.00s)
+=== RUN   TestRESPRead
+--- PASS: TestRESPRead (0.00s)
+=== RUN   TestTokensAndUsers
+--- PASS: TestTokensAndUsers (0.00s)
+=== RUN   TestAbortedTransactionsSkipped
+--- PASS: TestAbortedTransactionsSkipped (0.00s)
+PASS
+ok  	github.com/inorderly/inorderly/internal/broker	0.004s
 ?   	github.com/inorderly/inorderly/internal/scenario	[no test files]
 === RUN   TestUseCases
 === RUN   TestUseCases/webhooks
@@ -157,10 +247,10 @@ ok  	github.com/inorderly/inorderly/hlc	0.010s
     usecase_test.go:23: {"config":{"window":900000,"hold":900000,"remember":0},"devices":200,"gaps":639,"hashes":{"uploads-1":"sha256:3ba8ff6976333cb547b1a3fe94435e6ea920c6b07bc52984c0e0e88846225251","uploads-2":"sha256:3ba8ff6976333cb547b1a3fe94435e6ea920c6b07bc52984c0e0e88846225251","uploads-3":"sha256:3ba8ff6976333cb547b1a3fe94435e6ea920c6b07bc52984c0e0e88846225251"},"identical":true,"lost_in_transit":634,"minutes":182,"missing_in_gaps":1606,"naive_dropped":[4183,4335,4298],"naive_minutes_differ_between_runs":157,"naive_minutes_wrong":158,"ordered":214394,"readings":216000,"refused_late":972}
 === RUN   TestUseCases/audit
     usecase_test.go:23: {"accounts":300,"audit_duplicates_dropped":2510,"config":{"window":600000,"hold":600000,"remember":0},"declined":4019,"export_repeats":2510,"hashes":{"audit":"sha256:8fb9178619b327156a4c55f4356e5ff5b36e5e89446c427320efac99a4b0b151","billing":"sha256:8fb9178619b327156a4c55f4356e5ff5b36e5e89446c427320efac99a4b0b151","ledger":"sha256:8fb9178619b327156a4c55f4356e5ff5b36e5e89446c427320efac99a4b0b151"},"identical":true,"naive_balances_differ":107,"naive_declined":{"billing":4005,"ledger":4010},"naive_reversals_before_original":{"billing":107,"ledger":1},"reversals":929,"reversals_stamped_before_original":77,"state":"sha256:a128adf49ccf0e554139dfbb017aeeb90bdecd87ec8f5d14d8dacaa28ce9f3c3","states":["sha256:a128adf49ccf0e554139dfbb017aeeb90bdecd87ec8f5d14d8dacaa28ce9f3c3","sha256:a128adf49ccf0e554139dfbb017aeeb90bdecd87ec8f5d14d8dacaa28ce9f3c3","sha256:a128adf49ccf0e554139dfbb017aeeb90bdecd87ec8f5d14d8dacaa28ce9f3c3"],"transactions":100929}
---- PASS: TestUseCases (21.26s)
-    --- PASS: TestUseCases/webhooks (1.66s)
-    --- PASS: TestUseCases/feeds (3.55s)
-    --- PASS: TestUseCases/telemetry (6.27s)
-    --- PASS: TestUseCases/audit (7.71s)
+--- PASS: TestUseCases (15.65s)
+    --- PASS: TestUseCases/webhooks (1.17s)
+    --- PASS: TestUseCases/feeds (2.96s)
+    --- PASS: TestUseCases/telemetry (4.61s)
+    --- PASS: TestUseCases/audit (4.84s)
 PASS
-ok  	github.com/inorderly/inorderly/internal/usecase	21.299s
+ok  	github.com/inorderly/inorderly/internal/usecase	15.686s
