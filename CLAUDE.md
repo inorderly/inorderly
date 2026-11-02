@@ -114,9 +114,9 @@ Design decisions:
   containers in a CI job on Linux); kill-and-resume with a broker on both ends.
 
 Steps:
-1. [ ] Upkeep: go.mod 1.26.
-2. [ ] Input and output abstraction in the command; checkpoint positions; -follow, signals, -checkpoint-interval.
-3. [ ] Redis Streams in and out, with tests against real Redis.
+1. [x] Upkeep: go.mod 1.26.
+2. [x] Input and output layer (cmd/inorderly/runner.go: lineReader takes a broker.Source, output is a file or a broker sink); checkpoint keeps positions and the bounded end per broker input, and out_pos; a first checkpoint is written at start so a run killed early carries on; -follow (needs -state, brokers only), SIGINT/SIGTERM checkpoint and stop with "stopped": true; -checkpoint-interval.
+3. [x] Redis Streams in and out (internal/broker/redis.go), tests in cmd/inorderly/broker_test.go against real Redis 7.2.17: same output as files, output stream equals the file output, a full output refused, 10 SIGKILLs with brokers on both ends end with the uninterrupted output, -follow over two sessions, a foreign last entry refused.
 4. [ ] NATS JetStream in and out, with tests (CI service).
 5. [ ] Kafka in and out, with tests (CI service).
 6. [ ] Kill-and-resume tests with brokers on both ends.

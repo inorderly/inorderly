@@ -5,14 +5,18 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/inorderly/inorderly"
+	"github.com/inorderly/inorderly/internal/broker"
 )
 
 // checkpoint is what -state keeps: where each input had got to, how much
@@ -25,11 +29,15 @@ type checkpoint struct {
 	Sizes       []int64             `json:"input_sizes"`
 	ModTimes    []int64             `json:"input_mod_times"`
 	Offsets     []int64             `json:"offsets"`
+	Positions   []string            `json:"positions,omitempty"` // broker inputs: where to read on from
+	Until       []string            `json:"until,omitempty"`     // broker inputs: where a bounded read ends
+	Follow      bool                `json:"follow,omitempty"`
 	Lines       []uint64            `json:"lines"`
 	Done        []bool              `json:"done"`
 	Next        int                 `json:"next"`
 	Out         string              `json:"out"`
 	OutSize     int64               `json:"out_size"`
+	OutPos      uint64              `json:"out_pos,omitempty"` // a broker output: the last pos stored
 	Rejects     string              `json:"rejects"`
 	RejectsSize int64               `json:"rejects_size"`
 	Invalid     uint64              `json:"invalid"`
@@ -55,12 +63,93 @@ func (c *countingWriter) write(b []byte) error {
 	return c.w.WriteByte('\n')
 }
 
+// output is where ordered lines go: a file, standard output or a broker.
+type output interface {
+	write(ctx context.Context, pos uint64, line []byte) error
+	flush(ctx context.Context) error // buffers out
+	durable(ctx context.Context) error
+	size() int64
+	lastPos() uint64
+	finish() error // checks at the end of a run
+	close()
+}
+
+type fileOutput struct {
+	f   *os.File // nil for standard output
+	w   *countingWriter
+	pos uint64
+}
+
+func (o *fileOutput) write(_ context.Context, pos uint64, line []byte) error {
+	o.pos = pos
+	return o.w.write(line)
+}
+func (o *fileOutput) flush(context.Context) error { return o.w.w.Flush() }
+func (o *fileOutput) durable(ctx context.Context) error {
+	if err := o.flush(ctx); err != nil {
+		return err
+	}
+	if o.f == nil {
+		return nil
+	}
+	return o.f.Sync()
+}
+func (o *fileOutput) size() int64     { return o.w.n }
+func (o *fileOutput) lastPos() uint64 { return o.pos }
+func (o *fileOutput) finish() error   { return nil }
+func (o *fileOutput) close() {
+	if o.f != nil {
+		o.f.Close()
+	}
+}
+
+// brokerOutput writes one message per line. After a restart the broker may
+// already hold lines past the checkpoint; those are not written again, and
+// the last one must be the line this run makes at that pos.
+type brokerOutput struct {
+	name   string
+	sink   broker.Sink
+	skip   uint64 // lines up to here are already stored
+	last   []byte // the stored line at skip
+	pos    uint64
+	stored uint64
+}
+
+func (o *brokerOutput) write(ctx context.Context, pos uint64, line []byte) error {
+	o.pos = pos
+	if pos <= o.skip {
+		if pos == o.skip && !bytes.Equal(line, o.last) {
+			return fmt.Errorf("%s holds a different line at pos %d than this run makes; something else writes there", o.name, pos)
+		}
+		return nil
+	}
+	return o.sink.Write(ctx, pos, line)
+}
+func (o *brokerOutput) flush(ctx context.Context) error { return o.sink.Flush(ctx) }
+func (o *brokerOutput) durable(ctx context.Context) error {
+	if err := o.sink.Flush(ctx); err != nil {
+		return err
+	}
+	if o.pos > o.stored {
+		o.stored = o.pos
+	}
+	return nil
+}
+func (o *brokerOutput) size() int64     { return 0 }
+func (o *brokerOutput) lastPos() uint64 { return o.pos }
+func (o *brokerOutput) finish() error {
+	if o.pos < o.skip {
+		return fmt.Errorf("%s holds lines up to pos %d, but this run made only %d", o.name, o.skip, o.pos)
+	}
+	return nil
+}
+func (o *brokerOutput) close() { o.sink.Close() }
+
 type runner struct {
 	eng      *inorderly.Orderer
 	inputs   []*lineReader
 	next     int
-	outFile  *os.File
-	out      *countingWriter
+	out      output
 	rejFile  *os.File
 	rej      *countingWriter
 	logFile  *os.File // with -state: the record of every released event
@@ -69,39 +158,67 @@ type runner struct {
 	logCount int
 	oldLogs  []string // logs to remove once a checkpoint names a newer one
 	stateDir string
+	follow   bool
+	interval time.Duration
+	lastCP   time.Time
 	cp       checkpoint
 	invalid  uint64
 	resumed  bool
+	stopped  bool
 	finished *summary
 }
 
-func newRunner(cfg inorderly.Config, ins []string, out, rejects, stateDir string) (*runner, error) {
-	r := &runner{stateDir: stateDir}
-	abs := make([]string, len(ins))
+// The wait for each followed input in turn when there is nothing new.
+const followWait = 200 * time.Millisecond
+
+func newRunner(ctx context.Context, cfg inorderly.Config, ins []string, out, rejects, stateDir string, follow bool) (*runner, error) {
+	r := &runner{stateDir: stateDir, follow: follow}
+	names := make([]string, len(ins))
+	eps := make([]*broker.Endpoint, len(ins))
 	stdin := 0
 	for i, p := range ins {
-		abs[i] = absPath(p)
+		if broker.IsURL(p) {
+			e, err := broker.Parse(p)
+			if err != nil {
+				return nil, err
+			}
+			eps[i], names[i] = e, e.String()
+			continue
+		}
+		names[i] = absPath(p)
 		if p == "-" {
 			stdin++
 		}
+	}
+	var outEP *broker.Endpoint
+	outName := absPath(out)
+	if broker.IsURL(out) {
+		e, err := broker.Parse(out)
+		if err != nil {
+			return nil, err
+		}
+		outEP, outName = e, e.String()
 	}
 	if stdin > 1 {
 		return nil, errors.New("standard input can be read only once")
 	}
 	if stateDir != "" && (stdin > 0 || out == "-") {
-		return nil, errors.New("-state needs -in files and an -out file: standard input and output can't be read again or cut back")
+		return nil, errors.New("-state needs -in files or brokers and an -out file or broker: standard input and output can't be read again or cut back")
 	}
-	// No file may be both read and written, or written twice.
-	if out != "-" && rejects != "" && absPath(out) == absPath(rejects) {
+	// Nothing may be both read and written, or written twice.
+	if out != "-" && rejects != "" && outName == absPath(rejects) {
 		return nil, errors.New("-out and -rejects are the same file")
 	}
-	for _, a := range abs {
-		if (out != "-" && a == absPath(out)) || (rejects != "" && a == absPath(rejects)) {
+	if rejects != "" && broker.IsURL(rejects) {
+		return nil, errors.New("-rejects is a file")
+	}
+	for _, a := range names {
+		if (out != "-" && a == outName) || (rejects != "" && a == absPath(rejects)) {
 			return nil, fmt.Errorf("%s is both an input and an output", a)
 		}
 	}
-	r.cp = checkpoint{Format: checkpointFormat, Version: inorderly.Version, Config: cfg, Inputs: abs,
-		Out: absPath(out), Rejects: absPath(rejects)}
+	r.cp = checkpoint{Format: checkpointFormat, Version: inorderly.Version, Config: cfg, Inputs: names,
+		Out: outName, Rejects: absPath(rejects), Follow: follow}
 
 	var old *checkpoint
 	if stateDir != "" {
@@ -122,8 +239,41 @@ func newRunner(cfg inorderly.Config, ins []string, out, rejects, stateDir string
 			return nil, err
 		}
 	}
+
+	// The output first: a broker output that already holds lines is only
+	// for a run carrying on from a checkpoint.
+	var bout *brokerOutput
+	if outEP != nil {
+		sink, err := broker.OpenSink(ctx, outEP)
+		if err != nil {
+			return nil, err
+		}
+		bout = &brokerOutput{name: outName, sink: sink}
+		pos, line, err := sink.Last(ctx)
+		if err != nil {
+			sink.Close()
+			return nil, err
+		}
+		switch {
+		case old == nil && pos > 0:
+			sink.Close()
+			return nil, fmt.Errorf("%s already holds lines; write to an empty one, or carry on with the -state that wrote them", outName)
+		case old != nil && pos < old.OutPos:
+			sink.Close()
+			return nil, fmt.Errorf("%s holds lines up to pos %d, but the checkpoint in %s says %d were stored; it has been changed", outName, pos, stateDir, old.OutPos)
+		}
+		bout.skip, bout.last, bout.stored = pos, line, pos
+		r.out = bout
+	}
+
 	if old != nil && old.Finished {
-		if st, err := os.Stat(out); err != nil || st.Size() != old.OutSize {
+		if bout != nil {
+			if bout.skip != old.OutPos {
+				r.close()
+				return nil, fmt.Errorf("this run finished before, but %s has changed since; use another -state to run it again", out)
+			}
+		} else if st, err := os.Stat(out); err != nil || st.Size() != old.OutSize {
+			r.close()
 			return nil, fmt.Errorf("this run finished before, but %s has changed since; use another -state to run it again", out)
 		}
 		r.finished = old.Summary
@@ -131,10 +281,35 @@ func newRunner(cfg inorderly.Config, ins []string, out, rejects, stateDir string
 	}
 
 	for i, p := range ins {
-		lr := &lineReader{path: p}
-		if p == "-" {
+		lr := &lineReader{path: names[i]}
+		switch {
+		case eps[i] != nil:
+			from, until := "", ""
+			if old != nil {
+				from, until = old.Positions[i], old.Until[i]
+				lr.line, lr.done = old.Lines[i], old.Done[i]
+			} else if !follow {
+				var err error
+				if until, err = broker.End(ctx, eps[i]); err != nil {
+					r.close()
+					return nil, err
+				}
+			}
+			r.cp.Sizes = append(r.cp.Sizes, 0)
+			r.cp.ModTimes = append(r.cp.ModTimes, 0)
+			r.cp.Until = append(r.cp.Until, until)
+			if !lr.done {
+				src, err := broker.OpenSource(ctx, eps[i], from, until)
+				if err != nil {
+					r.close()
+					return nil, err
+				}
+				lr.src = src
+			}
+			lr.until = until
+		case p == "-":
 			lr.r = bufio.NewReaderSize(os.Stdin, 1<<16)
-		} else {
+		default:
 			f, err := os.Open(p)
 			if err != nil {
 				r.close()
@@ -148,6 +323,7 @@ func newRunner(cfg inorderly.Config, ins []string, out, rejects, stateDir string
 			}
 			r.cp.Sizes = append(r.cp.Sizes, st.Size())
 			r.cp.ModTimes = append(r.cp.ModTimes, st.ModTime().UnixNano())
+			r.cp.Until = append(r.cp.Until, "")
 			if old != nil {
 				if len(old.Sizes) != len(ins) || old.Sizes[i] != st.Size() || old.ModTimes[i] != st.ModTime().UnixNano() {
 					r.close()
@@ -169,7 +345,14 @@ func newRunner(cfg inorderly.Config, ins []string, out, rejects, stateDir string
 		r.next = old.Next
 		r.invalid = old.Invalid
 		r.resumed = true
-		r.outFile, r.out, err = reopen(out, old.OutSize)
+		if bout == nil {
+			var f *os.File
+			var w *countingWriter
+			f, w, err = reopen(out, old.OutSize)
+			if err == nil {
+				r.out = &fileOutput{f: f, w: w}
+			}
+		}
 		if err == nil && rejects != "" {
 			r.rejFile, r.rej, err = reopen(rejects, old.RejectsSize)
 		}
@@ -189,10 +372,17 @@ func newRunner(cfg inorderly.Config, ins []string, out, rejects, stateDir string
 			r.eng, err = inorderly.Restore(old.Engine, records)
 		}
 	} else {
-		if out == "-" {
-			r.out = &countingWriter{w: bufio.NewWriterSize(os.Stdout, 1<<16)}
-		} else {
-			r.outFile, r.out, err = reopen(out, 0)
+		switch {
+		case bout != nil:
+		case out == "-":
+			r.out = &fileOutput{w: &countingWriter{w: bufio.NewWriterSize(os.Stdout, 1<<16)}}
+		default:
+			var f *os.File
+			var w *countingWriter
+			f, w, err = reopen(out, 0)
+			if err == nil {
+				r.out = &fileOutput{f: f, w: w}
+			}
 		}
 		if err == nil && rejects != "" {
 			r.rejFile, r.rej, err = reopen(rejects, 0)
@@ -205,11 +395,17 @@ func newRunner(cfg inorderly.Config, ins []string, out, rejects, stateDir string
 		if err == nil {
 			r.eng, err = inorderly.New(cfg)
 		}
+		// A first checkpoint before anything is written, so a run killed
+		// early carries on over the same broker positions and output.
+		if err == nil && stateDir != "" {
+			err = r.checkpoint(ctx, false)
+		}
 	}
 	if err != nil {
 		r.close()
 		return nil, err
 	}
+	r.lastCP = time.Now()
 	return r, nil
 }
 
@@ -309,15 +505,21 @@ func (r *runner) matches(old *checkpoint) error {
 	if old.Format != checkpointFormat {
 		return fmt.Errorf("the checkpoint in %s has format %d; this inorderly reads format %d", r.stateDir, old.Format, checkpointFormat)
 	}
-	same := old.Config == r.cp.Config && old.Out == r.cp.Out && old.Rejects == r.cp.Rejects && len(old.Inputs) == len(r.cp.Inputs)
+	same := old.Config == r.cp.Config && old.Out == r.cp.Out && old.Rejects == r.cp.Rejects && len(old.Inputs) == len(r.cp.Inputs) && old.Follow == r.cp.Follow
 	for i := 0; same && i < len(old.Inputs); i++ {
 		same = old.Inputs[i] == r.cp.Inputs[i]
 	}
 	if !same {
 		return fmt.Errorf("the checkpoint in %s is for other inputs, outputs or settings; start it with the same flags or use another -state", r.stateDir)
 	}
-	if !old.Finished && (old.Engine == nil || old.Log == "" || len(old.Offsets) != len(old.Inputs) || len(old.Lines) != len(old.Inputs) || len(old.Done) != len(old.Inputs)) {
+	n := len(old.Inputs)
+	if !old.Finished && (old.Engine == nil || old.Log == "" || len(old.Offsets) != n || len(old.Lines) != n || len(old.Done) != n) {
 		return fmt.Errorf("the checkpoint in %s is damaged", r.stateDir)
+	}
+	for i, in := range old.Inputs {
+		if broker.IsURL(in) && !old.Finished && (len(old.Positions) != n || len(old.Until) != n || (old.Positions[i] == "" && !old.Done[i] && old.Lines[i] > 0)) {
+			return fmt.Errorf("the checkpoint in %s is damaged", r.stateDir)
+		}
 	}
 	return nil
 }
@@ -356,9 +558,12 @@ func (r *runner) close() {
 		if in.file != nil {
 			in.file.Close()
 		}
+		if in.src != nil {
+			in.src.Close()
+		}
 	}
-	if r.outFile != nil {
-		r.outFile.Close()
+	if r.out != nil {
+		r.out.close()
 	}
 	if r.rejFile != nil {
 		r.rejFile.Close()
@@ -368,27 +573,41 @@ func (r *runner) close() {
 	}
 }
 
+// errIdle: every followed input had nothing new in a full round.
+var errIdle = errors.New("idle")
+
 // nextLine reads the next line, taking the inputs a line at a time in turn.
-func (r *runner) nextLine() (*lineReader, []byte, bool, error) {
+func (r *runner) nextLine(ctx context.Context) (*lineReader, []byte, bool, error) {
+	idle := 0
 	for range r.inputs {
 		in := r.inputs[r.next]
 		r.next = (r.next + 1) % len(r.inputs)
 		if in.done {
 			continue
 		}
-		line, err := in.next()
+		line, err := in.next(ctx, followWait/time.Duration(len(r.inputs)))
 		if err == io.EOF {
 			in.done = true
 			continue
 		}
+		if err == broker.ErrIdle {
+			idle++
+			continue
+		}
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, nil, false, ctx.Err()
+			}
 			return nil, nil, false, fmt.Errorf("reading %s: %v", in.path, err)
 		}
 		return in, line, true, nil
 	}
+	if idle > 0 {
+		return nil, nil, false, errIdle
+	}
 	for _, in := range r.inputs {
 		if !in.done {
-			return r.nextLine()
+			return r.nextLine(ctx)
 		}
 	}
 	return nil, nil, false, nil
@@ -398,6 +617,7 @@ type reject struct {
 	Reason string          `json:"reason"`
 	Input  string          `json:"input"`
 	Line   uint64          `json:"line"`
+	At     string          `json:"at,omitempty"`
 	Error  string          `json:"error,omitempty"`
 	Raw    string          `json:"raw,omitempty"`
 	Event  json.RawMessage `json:"event,omitempty"`
@@ -414,9 +634,9 @@ func (r *runner) reject(rej reject) error {
 	return r.rej.write(b)
 }
 
-func (r *runner) write(rel []inorderly.Released) error {
+func (r *runner) write(ctx context.Context, rel []inorderly.Released) error {
 	for _, x := range rel {
-		if err := r.out.write(x.Line); err != nil {
+		if err := r.out.write(ctx, x.Pos, x.Line); err != nil {
 			return err
 		}
 		if r.log != nil {
@@ -433,52 +653,86 @@ func (r *runner) write(rel []inorderly.Released) error {
 	return nil
 }
 
-func (r *runner) process(every int) (*summary, error) {
+func (r *runner) process(ctx context.Context, every int) (*summary, error) {
 	if r.finished != nil {
 		return r.finished, nil
 	}
 	count := 0
 	for {
-		in, line, ok, err := r.nextLine()
+		in, line, ok, err := r.nextLine(ctx)
+		if err == errIdle || errors.Is(err, context.Canceled) {
+			if ctx.Err() != nil {
+				r.stopped = true
+				break
+			}
+			if err := r.timedCheckpoint(ctx); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			break
 		}
-		if len(trimSpace(line)) > 0 {
-			if err := r.handle(in, line); err != nil {
+		if in.src != nil || len(trimSpace(line)) > 0 {
+			if err := r.handle(ctx, in, line); err != nil {
 				return nil, err
 			}
 		}
 		count++
 		if r.stateDir != "" && count%every == 0 {
-			if err := r.checkpoint(false); err != nil {
+			if err := r.checkpoint(ctx, false); err != nil {
 				return nil, err
 			}
+		} else if err := r.timedCheckpoint(ctx); err != nil {
+			return nil, err
 		}
 	}
-	if err := r.write(r.eng.Flush()); err != nil {
+	if r.stopped {
+		// Following, stopped by a signal: keep what is held for the next run.
+		if err := r.checkpoint(context.Background(), false); err != nil {
+			return nil, err
+		}
+		sum := r.summary()
+		sum.Stopped = true
+		return sum, nil
+	}
+	if err := r.write(ctx, r.eng.Flush()); err != nil {
+		return nil, err
+	}
+	if err := r.out.finish(); err != nil {
 		return nil, err
 	}
 	sum := r.summary()
 	if r.stateDir != "" {
 		r.finished = sum
-		if err := r.checkpoint(true); err != nil {
+		if err := r.checkpoint(ctx, true); err != nil {
 			return nil, err
 		}
-	} else if err := r.flush(); err != nil {
+	} else if err := r.flush(ctx); err != nil {
 		return nil, err
 	}
 	return sum, nil
 }
 
-func (r *runner) handle(in *lineReader, line []byte) error {
+func (r *runner) timedCheckpoint(ctx context.Context) error {
+	if r.stateDir == "" || r.interval <= 0 || time.Since(r.lastCP) < r.interval {
+		return nil
+	}
+	return r.checkpoint(ctx, false)
+}
+
+func (r *runner) handle(ctx context.Context, in *lineReader, line []byte) error {
 	var ev inorderly.Event
 	var err error
-	if in.tooLong {
+	switch {
+	case in.problem != "":
+		err = errors.New(in.problem)
+	case in.tooLong:
 		err = fmt.Errorf("the line is longer than %d bytes", inorderly.MaxLine)
-	} else {
+	default:
 		ev, err = inorderly.ParseLine(line)
 	}
 	if err != nil {
@@ -487,17 +741,17 @@ func (r *runner) handle(in *lineReader, line []byte) error {
 		if len(raw) > 1000 {
 			raw = raw[:1000]
 		}
-		return r.reject(reject{Reason: "invalid", Input: in.path, Line: in.line, Error: err.Error(), Raw: raw})
+		return r.reject(reject{Reason: "invalid", Input: in.path, Line: in.line, At: in.at, Error: err.Error(), Raw: raw})
 	}
 	status, rel, err := r.eng.Push(ev)
 	if err != nil {
 		return err
 	}
-	if err := r.write(rel); err != nil {
+	if err := r.write(ctx, rel); err != nil {
 		return err
 	}
 	if status == inorderly.Late || status == inorderly.Conflict {
-		return r.reject(reject{Reason: status.String(), Input: in.path, Line: in.line, Event: ev.Canonical()})
+		return r.reject(reject{Reason: status.String(), Input: in.path, Line: in.line, At: in.at, Event: ev.Canonical()})
 	}
 	return nil
 }
@@ -512,8 +766,8 @@ func trimSpace(b []byte) []byte {
 	return b
 }
 
-func (r *runner) flush() error {
-	if err := r.out.w.Flush(); err != nil {
+func (r *runner) flush(ctx context.Context) error {
+	if err := r.out.flush(ctx); err != nil {
 		return err
 	}
 	if r.rej != nil {
@@ -532,11 +786,11 @@ func (r *runner) flush() error {
 // checkpoint makes the output written so far durable, then records where
 // every input had got to with the orderer's state, by writing a new file
 // and renaming it over the old one.
-func (r *runner) checkpoint(finished bool) error {
-	if err := r.flush(); err != nil {
+func (r *runner) checkpoint(ctx context.Context, finished bool) error {
+	if err := r.flush(ctx); err != nil {
 		return err
 	}
-	if err := r.outFile.Sync(); err != nil {
+	if err := r.out.durable(ctx); err != nil {
 		return err
 	}
 	for _, f := range []*os.File{r.rejFile, r.logFile} {
@@ -553,7 +807,10 @@ func (r *runner) checkpoint(finished bool) error {
 	}
 	cp := r.cp
 	cp.Log = r.logName
-	cp.OutSize = r.out.n
+	cp.OutSize = r.out.size()
+	if bo, ok := r.out.(*brokerOutput); ok {
+		cp.OutPos = bo.stored
+	}
 	if r.rej != nil {
 		cp.RejectsSize = r.rej.n
 	}
@@ -569,10 +826,16 @@ func (r *runner) checkpoint(finished bool) error {
 			return err
 		}
 		cp.Engine = snap
+		cp.Positions = nil
 		for _, in := range r.inputs {
 			cp.Offsets = append(cp.Offsets, in.off)
 			cp.Lines = append(cp.Lines, in.line)
 			cp.Done = append(cp.Done, in.done)
+			pos := ""
+			if in.src != nil {
+				pos = in.src.Position()
+			}
+			cp.Positions = append(cp.Positions, pos)
 		}
 	}
 	b, err := json.Marshal(cp)
@@ -608,6 +871,7 @@ func (r *runner) checkpoint(finished bool) error {
 		}
 	}
 	r.oldLogs = nil
+	r.lastCP = time.Now()
 	return nil
 }
 

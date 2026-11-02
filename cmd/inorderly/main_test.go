@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -507,7 +508,7 @@ func TestCompactionAfterAnInterruptedCompaction(t *testing.T) {
 	}
 	out, state := filepath.Join(dir, "out.ndjson"), filepath.Join(dir, "state")
 	start := func() *runner {
-		r, err := newRunner(cfg, []string{in}, out, "", state)
+		r, err := newRunner(context.Background(), cfg, []string{in}, out, "", state, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -515,15 +516,15 @@ func TestCompactionAfterAnInterruptedCompaction(t *testing.T) {
 	}
 	step := func(r *runner, lines int) {
 		for i := 0; i < lines; i++ {
-			lr, line, ok, err := r.nextLine()
+			lr, line, ok, err := r.nextLine(context.Background())
 			if err != nil || !ok {
 				t.Fatalf("line %d: %v %v", i, ok, err)
 			}
-			if err := r.handle(lr, line); err != nil {
+			if err := r.handle(context.Background(), lr, line); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if err := r.checkpoint(false); err != nil {
+		if err := r.checkpoint(context.Background(), false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -561,7 +562,7 @@ func TestCompactionAfterAnInterruptedCompaction(t *testing.T) {
 
 	// A third run carries on and finishes with the uninterrupted output.
 	r = start()
-	if _, err := r.process(100); err != nil {
+	if _, err := r.process(context.Background(), 100); err != nil {
 		t.Fatal(err)
 	}
 	r.close()

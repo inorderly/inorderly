@@ -16,18 +16,23 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/inorderly/inorderly"
+	"github.com/inorderly/inorderly/internal/broker"
 )
 
 func main() {
@@ -90,6 +95,7 @@ type summary struct {
 	SeqBackwards   uint64           `json:"seq_backwards"`
 	Gaps           []inorderly.Gap  `json:"gaps"`
 	Resumed        bool             `json:"resumed"`
+	Stopped        bool             `json:"stopped,omitempty"`
 	Config         inorderly.Config `json:"config"`
 }
 
@@ -107,6 +113,8 @@ func run(args []string) (int, error) {
 	every := fs.Int("checkpoint-every", 10000, "input lines between checkpoints")
 	statsPath := fs.String("stats", "", "write the summary here instead of standard error")
 	strict := fs.Bool("strict", false, "exit with status 3 if any event was late, conflicting or invalid")
+	follow := fs.Bool("follow", false, "keep reading broker inputs as new messages come, never flushing; SIGINT or SIGTERM writes a checkpoint and stops (needs -state)")
+	interval := fs.Duration("checkpoint-interval", 0, "with -state, also write a checkpoint when this long has passed since the last one (0: only every -checkpoint-every lines)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0, nil
@@ -125,15 +133,35 @@ func run(args []string) (int, error) {
 	if *every < 1 {
 		return 2, errors.New("-checkpoint-every must be at least 1")
 	}
+	if *interval < 0 {
+		return 2, errors.New("-checkpoint-interval can't be negative")
+	}
 	if len(ins) == 0 {
 		ins = multi{"-"}
 	}
+	if *follow {
+		if *stateDir == "" {
+			return 2, errors.New("-follow needs -state, so a stopped run can carry on")
+		}
+		for _, in := range ins {
+			if !broker.IsURL(in) {
+				return 2, fmt.Errorf("-follow reads brokers only, and %s is a file", in)
+			}
+		}
+	}
+	ctx := context.Background()
+	if *follow {
+		var stop context.CancelFunc
+		ctx, stop = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		defer stop()
+	}
 	cfg := inorderly.Config{Window: *window, Hold: *hold, Remember: *remember}
-	r, err := newRunner(cfg, ins, *out, *rejects, *stateDir)
+	r, err := newRunner(ctx, cfg, ins, *out, *rejects, *stateDir, *follow)
 	if err != nil {
 		return 1, err
 	}
-	sum, err := r.process(*every)
+	r.interval = *interval
+	sum, err := r.process(ctx, *every)
 	r.close()
 	if err != nil {
 		return 1, err
@@ -193,9 +221,36 @@ type lineReader struct {
 	line    uint64
 	done    bool
 	tooLong bool
+
+	// A broker input reads messages instead, one line each.
+	src     broker.Source
+	until   string // where a bounded read ends; "" when following
+	at      string // where the last message came from
+	problem string // why the last message holds no line
 }
 
-func (l *lineReader) next() (line []byte, err error) {
+// next returns the next line, io.EOF at the end, or broker.ErrIdle when a
+// followed input had nothing new within wait.
+func (l *lineReader) next(ctx context.Context, wait time.Duration) (line []byte, err error) {
+	if l.src != nil {
+		m, err := l.src.Next(ctx, wait)
+		if err != nil {
+			return nil, err
+		}
+		l.line++
+		l.at, l.problem, l.tooLong = m.At, m.Problem, len(m.Value) > inorderly.MaxLine
+		if l.tooLong {
+			m.Value = m.Value[:inorderly.MaxLine]
+		}
+		if m.Problem == "" && len(trimSpace(m.Value)) == 0 {
+			l.problem = "the message is empty"
+		}
+		return m.Value, nil
+	}
+	return l.nextFileLine()
+}
+
+func (l *lineReader) nextFileLine() (line []byte, err error) {
 	defer func() {
 		if err == nil && l.line == 1 {
 			line = bytes.TrimPrefix(line, []byte("\xef\xbb\xbf")) // a byte-order mark
