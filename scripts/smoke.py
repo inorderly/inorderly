@@ -85,6 +85,20 @@ def smoke(bin_dir, version):
         require(reasons == ["invalid", "late", "conflict"], f"rejects {reasons}")
         print("rejects and -strict: passed", flush=True)
 
+        mixed = b'{"id":"a","producer":"fast","time":100}\n{"id":"b","producer":"slow","time":80}\n{"id":"c","producer":"fast","time":80}\n'
+        late = d / "late.ndjson"
+        r = run([exe, "-window", "5", "-window-for", "slow=30", "-late", late], stdin=mixed)
+        s = json.loads(r.stderr)
+        require(s["late"] == 1 and s["ordered"] == 2, f"-window-for: {s}")
+        require(late.read_bytes() == b'{"id":"c","producer":"fast","time":80}\n', f"the late file holds {late.read_bytes()!r}")
+        back = json.loads(run([exe, "-in", late]).stderr)
+        require(back["ordered"] == 1 and back["invalid"] == 0, f"the late file read back: {back}")
+        print("-window-for and -late: passed", flush=True)
+
+        r = run([exe, "-in", "redis://127.0.0.1:1/events"], ok=(1,), timeout=60)
+        require(b"redis 127.0.0.1:1" in r.stderr, f"an unreachable broker: {r.stderr!r}")
+        print("an unreachable broker is a clean error: passed", flush=True)
+
         events = d / "events.ndjson"
         events.write_bytes(produce("--seed", "5", "--events", "200000"))
         clean, killed = d / "clean.ndjson", d / "killed.ndjson"

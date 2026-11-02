@@ -6,8 +6,9 @@ tests check them.
 
 ## The promise
 
-Give an Orderer a set of events. If no event arrives more than `Window` behind
-the newest event time seen so far, the output is the same sequence, byte for
+Give an Orderer a set of events. If no event arrives more than its producer's
+window (`Window`, or the producer's own window from `Windows`) behind the
+newest event time seen so far, the output is the same sequence, byte for
 byte, whatever order the events arrived in, however many times each one
 arrived, and however the stream was cut up by snapshots and restores. The
 replay hash, the SHA-256 of the output, is the same too.
@@ -41,14 +42,23 @@ canonical form are the same event.
 
 ## The watermark
 
-The **watermark** is the newest `time` seen, minus `Window`. It only moves
-forward.
+Each producer has a **window**: `Window`, unless `Windows` gives that
+producer one of its own. The largest of them all is the **widest window**.
 
-- An event whose `time` is below the watermark when it arrives is **late**. It
-  is refused and changes nothing.
-- An event at or above the watermark is **on time**.
+The **watermark** is the newest `time` seen, minus the widest window; with no
+producer windows that is `Window`. A producer's own **lateness line** is the
+newest `time` seen minus its window. Both only move forward.
 
-`Window` 0 still allows events with the same time as the newest one.
+- An event whose `time` is below its producer's lateness line when it arrives
+  is **late**. It is refused and changes nothing.
+- An event at or above it is **on time**.
+- Events are released below the watermark. Every on-time event's time is at
+  or above the watermark, so it can still take its place.
+
+`Window` 0 still allows events with the same time as the newest one. A
+producer window may be smaller than `Window` as well as larger: it only
+decides when that producer's events are late, while release always waits for
+the widest window.
 
 ## The order
 
@@ -132,5 +142,5 @@ the original would have released next.
 ## What is outside the promise
 
 - Late events, and conflicts: both are reported, never hidden.
-- Changing `Window`, `Hold` or `Remember` part way through a stream.
+- Changing `Window`, `Windows`, `Hold` or `Remember` part way through a stream.
 - Two Orderers fed different sets of events.

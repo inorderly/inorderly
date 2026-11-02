@@ -67,7 +67,11 @@ Shuffle those three lines, repeat any of them, and the output stays the same.
   that must come first) and `data` (any JSON).
 - **Window.** The watermark is the newest time seen minus `-window`. Events
   below it go out. An event that arrives below it is late: it's refused and
-  reported, never slipped in somewhere new.
+  reported, never slipped in somewhere new. `-late FILE` keeps the late events
+  as lines another run can read.
+- **Slow producers.** `-window-for sensor-7=60000` gives one producer a wider
+  window of its own. Its events are late only past that, while everyone
+  else keeps the tight one; output waits for the widest.
 - **Order.** By time, then logical counter, then producer, seq and id.
 - **Parents.** An event that names a parent waits for it, up to `-hold` past
   its own time, and then goes straight after it. A parent that doesn't show
@@ -114,6 +118,28 @@ would have written.
 ```sh
 inorderly -in day.ndjson -out ordered.ndjson -window 500 -state ordered.state
 ```
+
+## Brokers
+
+`-in` and `-out` also take Redis Streams, NATS JetStream and Kafka, with
+clients built in. Nothing else to install, and still no dependencies.
+
+```sh
+inorderly -in kafka://kafka-1:9092/payments -in redis://cache:6379/orders \
+  -out nats://nats:4222/ordered -window 500 -state run.state
+```
+
+Inorderly keeps where it got to in each input in its own checkpoint, without
+consumer groups. Killed and started again, it reads on from there, reads the
+output's last message to see how far it got, and doesn't write those lines
+again. With brokers on both ends, every line still comes out once, in the
+same order.
+
+Without `-follow` a run reads up to where each input ended when it started,
+then flushes. With `-follow` it keeps going as messages come, and on SIGTERM
+it writes a checkpoint and stops, so the next run carries on with what was
+still held. [docs/REFERENCE.md](docs/REFERENCE.md#brokers) has the URL forms,
+TLS, SASL and the limits.
 
 ## From Go
 

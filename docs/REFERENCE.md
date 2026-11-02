@@ -15,14 +15,18 @@ inorderly demo [flags]      run the self-checking demo and print its report
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-in FILE` | standard input | An input file. Repeat it to read several files a line at a time in turn: one line from the first, one from the second, and so on. `-` is standard input. |
-| `-out FILE` | standard output | The ordered output. |
+| `-in FILE` or `-in URL` | standard input | An input file or broker. Repeat it to read several a line at a time in turn: one line from the first, one from the second, and so on. `-` is standard input. |
+| `-out FILE` or `-out URL` | standard output | The ordered output: a file or a broker. |
 | `-window N` | 0 | How far, in event-time units, an event may arrive behind the newest time seen. |
+| `-window-for PRODUCER=N` | none | A window of N for one producer, in place of `-window`. Repeat it for more producers. Release waits for the largest window. |
 | `-hold N` | the window | How long past its own time an event waits for a parent. |
 | `-remember N` | 0 (always) | How long behind the watermark released events are remembered, for duplicates and parents. |
 | `-rejects FILE` | none | Late, conflicting and invalid lines, one JSON object each. |
-| `-state DIR` | none | Checkpoints. A run killed part way carries on from the last checkpoint when started again with the same flags. Needs `-in` files and an `-out` file. |
+| `-late FILE` | none | Late events alone, each as its canonical line, ready to be read again by another run. |
+| `-state DIR` | none | Checkpoints. A run killed part way carries on from the last checkpoint when started again with the same flags. Needs `-in` files or brokers and an `-out` file or broker. |
 | `-checkpoint-every N` | 10000 | Input lines between checkpoints. |
+| `-checkpoint-interval D` | 0 (off) | Also checkpoint when this long, such as `30s`, has passed since the last one. |
+| `-follow` | off | Keep reading broker inputs as messages come, never flushing. SIGINT or SIGTERM writes a checkpoint and stops. Needs `-state`, and brokers for every input. |
 | `-stats FILE` | standard error | Where the summary goes. |
 | `-strict` | off | Exit with status 3 if any line was late, conflicting or invalid. |
 
@@ -58,12 +62,22 @@ Here `pay-77` has a clock 3 ms behind its parent's, so it waited for
 ### Rejects
 
 ```json
-{"reason":"late","input":"a.ndjson","line":4021,"event":{"id":"x","producer":"p","time":12}}
+{"reason":"late","input":"a.ndjson","line":4021,"watermark":40,"after":3577,"event":{"id":"x","producer":"p","time":12}}
 {"reason":"conflict","input":"b.ndjson","line":77,"event":{"id":"o-1001","producer":"checkout","time":1760000000123}}
 {"reason":"invalid","input":"-","line":9,"error":"time is missing","raw":"{\"id\":\"y\",\"producer\":\"p\"}"}
 ```
 
-`raw` holds at most the first 1,000 bytes of the line.
+`raw` holds at most the first 1,000 bytes of the line. A late line gives
+`watermark`, the time its producer's events had to reach when it came, and
+`after`, how many lines had been written by then. A line from a broker gives
+`at`, where it was: `entry 1700000000000-3`, `seq 57` or
+`partition 2 offset 51`.
+
+### Late events
+
+`-late FILE` gets each late event as its canonical line, the same form the
+output uses without `pos` and `missing`, so the file can be the input of
+another run: with a wider window, say, or merged into a correction.
 
 ### Summary
 
@@ -80,7 +94,8 @@ Printed as JSON when the run ends:
 | `seq_gaps`, `gaps` | Jumps in each producer's `seq` numbers, and the first 1,000 of them. |
 | `seq_backwards` | Events whose `seq` was below one already written for their producer. |
 | `resumed` | Whether this run carried on from a checkpoint. |
-| `config` | The window, hold and remember used. |
+| `stopped` | Present and true when a `-follow` run was stopped by a signal. |
+| `config` | The window, producer windows, hold and remember used. |
 
 ### Exit status
 
@@ -106,8 +121,53 @@ since the checkpoint, or if the inputs, outputs or settings differ. A finished
 run started again prints its summary and does nothing else, unless the output
 file has changed since, which is refused too.
 
-`-out` and `-rejects` can't be the same file, and neither can be an input.
-A UTF-8 byte-order mark at the start of an input is skipped.
+`-out`, `-rejects` and `-late` can't be the same file, and none of them can
+be an input. A UTF-8 byte-order mark at the start of an input is skipped.
+
+## Brokers
+
+`-in` and `-out` take broker URLs as well as files. Inorderly talks to Redis
+Streams, NATS JetStream and Kafka itself, with clients written against Go's
+standard library; there is nothing else to install.
+
+| URL | What it reads or writes |
+|---|---|
+| `redis://[user:pass@]host[:6379]/stream` | A Redis stream. Each entry keeps the line in the field `event`, or the one `?field=` names. `?db=N` selects a database. Redis 6.2 or newer, or Valkey. |
+| `nats://[user:pass@]host[:4222]/stream` | A JetStream stream. `?subject=` reads only that subject, and names the subject an output is written to when the stream has more than one. A user without a password is a token. |
+| `kafka://[user:pass@]host[:9092]/topic` | A Kafka topic, every partition. With a user, SASL PLAIN, or `?sasl=scram-sha-256` or `scram-sha-512`. Kafka 2.1 or newer. |
+
+`rediss://`, `tls://` and `kafkas://` use TLS, checking the server's
+certificate unless `?insecure=true`. Passwords are never written to a
+checkpoint, a rejects file or a message.
+
+**Reading.** Each message is one input line. Inorderly reads without a
+consumer group: it keeps where each input had got to (the Redis entry ID, the
+JetStream stream sequence, the next offset of each Kafka partition) in its own
+checkpoint. A Kafka input takes its partitions a message at a time in turn.
+Without `-follow`, a run reads up to the end each input had when it started,
+then flushes, as with files, and a restarted run reads to that same end. With
+`-follow`, it keeps reading and releasing as the watermark moves, and never
+flushes: what is still held waits in the checkpoint for the next run.
+
+**Writing.** One message per output line, in order: a Redis entry with the ID
+`<pos>-1`, so Redis itself refuses a line written twice; a JetStream message
+on one subject, acked, with the `Nats-Msg-Id` `<subject>:<pos>`; a Kafka record
+with `acks=all`, on a topic of exactly one partition, so its order is the
+output's. A run without a checkpoint refuses an output that already holds
+messages.
+
+**Restarting.** A broker output can't be cut back to the checkpoint the way
+a file is. Instead, a restarted run reads the output's last message, which
+names its `pos`, and doesn't write the lines up to there again. The line it
+makes at that `pos` must be the one stored, or it stops: something else
+writes there. So a run killed at any moment, with brokers on both ends,
+leaves the output it would have left without the kill, each line once.
+
+**What it doesn't do.** Kafka records are read uncommitted, without
+transaction markers; batches compressed with gzip are read, and snappy, lz4
+or zstd batches are refused by name. Outputs are written uncompressed. A
+Kafka partition added after a run started isn't read by that run. Inorderly
+doesn't create streams or topics.
 
 ## The Go packages
 
@@ -129,7 +189,9 @@ fmt.Println(o.Hash())
 | `(*Orderer).Push(Event)` | Takes an event: `Accepted`, `Duplicate`, `Late` or `Conflict`, and the events released by it, in order. |
 | `(*Orderer).Flush()` | Releases everything held. Push can't follow it. |
 | `(*Orderer).Hash()` | The replay hash so far. |
-| `(*Orderer).Stats()`, `Gaps()`, `Watermark()` | Counts, sequence gaps and the watermark. |
+| `(*Orderer).Stats()`, `Gaps()`, `Watermark()` | Counts, sequence gaps and the watermark (newest time less the widest window). |
+| `(*Orderer).WatermarkFor(producer)` | The time below which that producer's events are late. |
+| `Config.Windows` | Producer windows: `[]ProducerWindow{{Producer: "slow", Window: 5000}}`. |
 | `(*Orderer).Snapshot()` | The whole state, to save. |
 | `(*Orderer).Remembered()` | The records of the released events still remembered. |
 | `(*Orderer).SnapshotHeld()` | The state without the remembered released events; keep each `Released.Record` yourself. |
