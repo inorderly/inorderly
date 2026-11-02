@@ -379,10 +379,19 @@ func (s *natsSource) pull(wait time.Duration) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if op != "MSG" || m.subject != reply {
+		if op != "MSG" {
+			continue
+		}
+		// Deliveries keep the subject they were published to and come on our
+		// inbox subscription with an ack subject naming this consumer; status
+		// messages come on the pull's own reply subject.
+		if m.status == "" && !ackFor(m.reply, s.e.Name, s.consumer) {
 			continue
 		}
 		if m.status != "" {
+			if m.subject != reply {
+				continue
+			}
 			switch m.status {
 			case "100": // a heartbeat
 				continue
@@ -412,6 +421,19 @@ func (s *natsSource) pull(wait time.Duration) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// ackFor says whether an ack subject belongs to this stream's consumer.
+func ackFor(reply, stream, consumer string) bool {
+	t := strings.Split(reply, ".")
+	switch {
+	case len(t) < 9 || t[0] != "$JS" || t[1] != "ACK":
+		return false
+	case len(t) >= 11:
+		return t[4] == stream && t[5] == consumer
+	default:
+		return t[2] == stream && t[3] == consumer
+	}
 }
 
 // ackSeq reads the stream sequence and the number still pending from a

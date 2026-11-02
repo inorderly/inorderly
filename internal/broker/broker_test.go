@@ -151,6 +151,11 @@ func TestAckSeq(t *testing.T) {
 			t.Fatalf("%s: %d %d %v", reply, n, p, ok)
 		}
 	}
+	if !ackFor("$JS.ACK.events.c1.1.57.3.1700000000000000000.12", "events", "c1") ||
+		!ackFor("$JS.ACK.hub.acchash.events.c1.1.58.4.1700000000000000000.0.token", "events", "c1") ||
+		ackFor("$JS.ACK.other.c1.1.57.3.1700000000000000000.12", "events", "c1") {
+		t.Fatal("ackFor")
+	}
 	if _, _, ok := ackSeq("_INBOX.x.1"); ok {
 		t.Fatal("an inbox subject read as an ack")
 	}
