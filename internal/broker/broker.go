@@ -267,3 +267,16 @@ func ReadAll(ctx context.Context, e *Endpoint) ([][]byte, error) {
 		out = append(out, m.Value)
 	}
 }
+
+// Ensure creates a NATS stream (with one subject of the same name) or a
+// Kafka topic (one partition) if it is missing; Redis streams need nothing.
+// Inorderly itself never creates them: tests and examples do.
+func Ensure(ctx context.Context, e *Endpoint) error {
+	switch e.Kind {
+	case "nats":
+		return natsEnsure(ctx, e)
+	case "kafka":
+		return kafkaEnsure(ctx, e)
+	}
+	return nil
+}

@@ -43,3 +43,46 @@ jobs:
           mkdir bin
           go build -trimpath -ldflags '-s -w' -o "bin/inorderly$(go env GOEXE)" ./cmd/inorderly
           if [ "$RUNNER_OS" = Windows ]; then python scripts/smoke.py bin; else python3 scripts/smoke.py bin; fi
+
+  # The broker clients against real servers: Redis and Valkey, NATS with
+  # JetStream and Kafka in KRaft mode, the official images, started fresh.
+  # Failing test lines are repeated as annotations, which can be read
+  # without the job log.
+  brokers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+      - name: Start the servers
+        run: |
+          docker run -d --name redis -p 6379:6379 redis:8
+          docker run -d --name valkey -p 6380:6379 valkey/valkey:9
+          docker run -d --name nats -p 4222:4222 -p 8222:8222 nats:2.12 -js -m 8222
+          docker run -d --name kafka -p 9092:9092 apache/kafka:4.1.0
+          for i in $(seq 1 90); do
+            ok=0
+            docker exec redis redis-cli ping >/dev/null 2>&1 && ok=$((ok+1))
+            docker exec valkey valkey-cli ping >/dev/null 2>&1 && ok=$((ok+1))
+            curl -sf 'http://localhost:8222/healthz?js-enabled-only=true' >/dev/null && ok=$((ok+1))
+            docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 && ok=$((ok+1))
+            [ $ok = 4 ] && exit 0
+            sleep 2
+          done
+          docker ps -a
+          echo "::error::the brokers didn't start"
+          exit 1
+      - name: Broker tests
+        shell: bash
+        run: |
+          set -o pipefail
+          run() {
+            go test -count=1 -v ./internal/broker/ ./cmd/inorderly/ -run "$1" 2>&1 | tee -a broker-test.log
+          }
+          status=0
+          INORDERLY_TEST_REDIS=localhost:6379 INORDERLY_TEST_NATS=localhost:4222 INORDERLY_TEST_KAFKA=localhost:9092 run 'Test' || status=1
+          INORDERLY_TEST_REDIS=localhost:6380 run 'Broker' || status=1
+          grep -E '^\s+[a-z_]+_test\.go:[0-9]+:|--- FAIL|^panic|^FAIL' broker-test.log | head -40 | while IFS= read -r l; do echo "::error::${l}"; done
+          grep -E 'kills,' broker-test.log | while IFS= read -r l; do echo "::notice::${l}"; done
+          exit $status

@@ -52,7 +52,15 @@ func eachBroker(t *testing.T, f func(t *testing.T, newURL func(string) string)) 
 			stamp := time.Now().UnixNano()
 			f(t, func(base string) string {
 				n++
-				return fmt.Sprintf("%s://%s/it-%s-%d-%d", k.scheme, host, base, stamp, n)
+				u := fmt.Sprintf("%s://%s/it-%s-%d-%d", k.scheme, host, base, stamp, n)
+				e, err := broker.Parse(u)
+				if err == nil {
+					err = broker.Ensure(context.Background(), e)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				return u
 			})
 		})
 	}
@@ -338,6 +346,43 @@ func TestBrokerOutputWithAnotherWriter(t *testing.T) {
 			t.Fatalf("wrote after a foreign message: %s", r.stderr)
 		}
 	})
+}
+
+// A Kafka input of three partitions: two bounded runs read the same lines in
+// the same order, and with a window wide enough that nothing is late, the
+// output is the one the same lines give from a file.
+func TestKafkaPartitions(t *testing.T) {
+	host := os.Getenv("INORDERLY_TEST_KAFKA")
+	if host == "" {
+		t.Skip("INORDERLY_TEST_KAFKA is not set")
+	}
+	u := fmt.Sprintf("kafka://%s/it-parts-%d", host, time.Now().UnixNano())
+	e, err := broker.Parse(u)
+	if err == nil {
+		err = broker.EnsureTopic(context.Background(), e, 3)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := brokerSet(3000)
+	all := append(a[:len(a)-1], b...)
+	produce(t, u, all)
+	dir := t.TempDir()
+	file := write(t, dir, "all.ndjson", joinLines(all))
+	ref := runCLI(t, nil, "-in", file, "-window", "1000000000")
+	one := runCLI(t, nil, "-in", u, "-window", "1000000000")
+	two := runCLI(t, nil, "-in", u, "-window", "1000000000")
+	if ref.code != 0 || one.code != 0 || two.code != 0 {
+		t.Fatalf("%s %s %s", ref.stderr, one.stderr, two.stderr)
+	}
+	if !bytes.Equal(one.stdout, two.stdout) || !bytes.Equal(one.stdout, ref.stdout) || one.sum.In != uint64(len(all)) {
+		t.Fatalf("partitioned input: %s, file: %s", one.stderr, ref.stderr)
+	}
+	// An output topic needs one partition.
+	r := runCLI(t, nil, "-in", file, "-out", u)
+	if r.code == 0 || !bytes.Contains(r.stderr, []byte("needs one")) {
+		t.Fatalf("wrote to a topic of 3 partitions: %s", r.stderr)
+	}
 }
 
 var _ = inorderly.Version
