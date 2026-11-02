@@ -90,7 +90,8 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          docker logs nats 2>&1 | grep -E 'it-a-|MSG.NEXT|CONSUMER|\[ERR\]|\[WRN\]' | grep -v 'healthz' | head -120 > nats-trace.txt || true
+          docker logs nats 2>&1 | grep -E 'CONSUMER|MSG.NEXT|JS.ACK|HMSG|\[ERR\]|\[WRN\]|consumer_create|-ERR' | grep -v 'Temporary storage' > nats-all.txt || true
+          { head -70 nats-all.txt; echo ...; tail -50 nats-all.txt; } > nats-trace.txt
           for part in 0 1 2 3 4 5; do
             chunk=$(sed -n "$((part*20+1)),$((part*20+20))p" nats-trace.txt | cut -c1-300 | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"}{print}')
             [ -n "$chunk" ] && echo "::warning title=nats trace ${part}::${chunk}"
