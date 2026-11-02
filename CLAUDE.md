@@ -63,6 +63,69 @@ menu links. Images are drawn into
 static/images. Every number comes from `test/results/`; when a recording
 changes a number, update the site too.
 
-## Next
+## In progress: Inorderly 0.2 (softdev-plan item 32, approved by YK 2026-11-02)
 
-Nothing is decided. Agree it with the owner before it goes here.
+What and why: the pipelines that need deterministic ordering live on brokers,
+not files, and today a killed run resumes exactly only because it can re-read
+input files and cut its output file back. A slow producer also forces one
+large window on everyone, and late events can only be counted, not
+reconciled.
+
+Design decisions:
+- Broker mode, native and pure Go (YK chose this over pipe recipes and client
+  libraries): small built-in clients for Redis Streams, NATS JetStream and
+  Kafka, still no dependencies. `-in` and `-out` take URLs as well as files:
+  `redis://[user:pass@]host:port/stream`, `nats://[user:pass@]host:port/stream`
+  (JetStream stream, optional `?subject=`), `kafka://host:port/topic` (every
+  partition of the topic). `rediss://`, `tls://` and `kafkas://` use TLS.
+  Auth: Redis AUTH, NATS user/password or token, Kafka SASL PLAIN and
+  SCRAM-SHA-256/512. Each message value is one input line; inputs are read
+  round-robin as files are.
+- No consumer groups: Inorderly is the only reader of its inputs and keeps the
+  positions in its own checkpoint (Redis entry ID, JetStream stream sequence,
+  Kafka offset per partition), so a restart reads on from exactly there.
+- Output: one message per ordered line, in order. On restart the sink's last
+  message is read back (XREVRANGE, JetStream last message on the subject,
+  the last record of a one-partition Kafka topic); lines up to its `pos` are
+  not written again, and the line at that `pos` must match the one the run
+  recomputes, or the run refuses (someone else writes there). Redis entries
+  get the ID `<pos>-1`, so a repeat is refused by Redis itself; JetStream
+  messages carry `Nats-Msg-Id`. So a killed run neither loses nor repeats an
+  output line.
+- Two ways to run against a broker: by default read up to the end each input
+  had when the run started, then flush, as with files; with `-follow`, keep
+  reading and releasing as the watermark moves, never flush, and on SIGINT or
+  SIGTERM write a checkpoint and stop, so the next run carries on.
+  `-checkpoint-interval` adds a time-based checkpoint for quiet streams.
+- Kafka scope: Metadata, ListOffsets, Fetch and Produce with record batch v2,
+  uncompressed or gzip on read (other codecs refused by name), uncompressed
+  with acks=all on write; output topic must have one partition.
+- Phase B, per-producer windows: `-window-for PRODUCER=N` gives one producer a
+  larger window than `-window`. Its events are late only below newest time
+  minus its own window; the others keep the tight one. Release waits for the
+  largest window, which keeps the output the same whatever the arrival order;
+  CONTRACT.md gets the rule first. Late events to a side file: `-late FILE`
+  writes each late event in canonical form with `after`, the `pos` of the
+  last line released before its own point, so it can be reconciled or fed to
+  a later run.
+- Upkeep: go.mod to go 1.26. Version 0.2.0.
+- Testing: protocol encoders and decoders against byte fixtures; real servers
+  where they can run (Redis from source here; Redis, NATS and Kafka as service
+  containers in a CI job on Linux); kill-and-resume with a broker on both ends.
+
+Steps:
+1. [ ] Upkeep: go.mod 1.26.
+2. [ ] Input and output abstraction in the command; checkpoint positions; -follow, signals, -checkpoint-interval.
+3. [ ] Redis Streams in and out, with tests against real Redis.
+4. [ ] NATS JetStream in and out, with tests (CI service).
+5. [ ] Kafka in and out, with tests (CI service).
+6. [ ] Kill-and-resume tests with brokers on both ends.
+7. [ ] Phase B: -window-for and -late, contract first, with determinism tests.
+8. [ ] README, CONTRACT.md, REFERENCE.md, smoke.
+9. [ ] Independent review (at most two rounds), fixes, fresh test/results.
+10. [ ] 0.2.0 released by the workflow, downloads checked.
+11. [ ] inorderly.com post with its own SVG, pages; softdevstudio.com note; softdev-plan log row.
+
+Local note: this cloud session has Go 1.24 only, so local tests run on a
+scratch go.mod; CI on the go.mod version is the real check. No local NATS or
+Kafka server can be fetched here, so those run in CI.
