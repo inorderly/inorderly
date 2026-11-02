@@ -143,15 +143,15 @@ func TestSCRAMSHA256(t *testing.T) {
 }
 
 func TestAckSeq(t *testing.T) {
-	for reply, want := range map[string]uint64{
-		"$JS.ACK.events.c1.1.57.3.1700000000000000000.0":                   57,
-		"$JS.ACK.hub.acchash.events.c1.1.58.4.1700000000000000000.0.token": 58,
+	for reply, want := range map[string][2]uint64{
+		"$JS.ACK.events.c1.1.57.3.1700000000000000000.12":                  {57, 12},
+		"$JS.ACK.hub.acchash.events.c1.1.58.4.1700000000000000000.0.token": {58, 0},
 	} {
-		if n, ok := ackSeq(reply); !ok || n != want {
-			t.Fatalf("%s: %d %v", reply, n, ok)
+		if n, p, ok := ackSeq(reply); !ok || n != want[0] || p != want[1] {
+			t.Fatalf("%s: %d %d %v", reply, n, p, ok)
 		}
 	}
-	if _, ok := ackSeq("_INBOX.x.1"); ok {
+	if _, _, ok := ackSeq("_INBOX.x.1"); ok {
 		t.Fatal("an inbox subject read as an ack")
 	}
 }

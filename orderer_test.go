@@ -11,6 +11,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -682,4 +683,113 @@ func best(f func() float64) float64 {
 		}
 	}
 	return m
+}
+
+// arriveFor shuffles copies of the events, each within its producer's window.
+func arriveFor(rng *rand.Rand, events []Event, cfg Config) []Event {
+	win := map[string]int64{}
+	for _, w := range cfg.Windows {
+		win[w.Producer] = w.Window
+	}
+	type a struct {
+		at  int64
+		tie uint64
+		e   Event
+	}
+	var list []a
+	for _, e := range events {
+		w, ok := win[e.Producer]
+		if !ok {
+			w = cfg.Window
+		}
+		for c := 1 + rng.IntN(3); c > 0; c-- {
+			list = append(list, a{e.Time + rng.Int64N(w+1), rng.Uint64(), e})
+		}
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].at < list[j].at || (list[i].at == list[j].at && list[i].tie < list[j].tie)
+	})
+	out := make([]Event, len(list))
+	for i := range list {
+		out[i] = list[i].e
+	}
+	return out
+}
+
+// With producer windows, any arrival order in which each event comes within
+// its own producer's window gives the same output, snapshots included.
+func TestProducerWindowsSameOutput(t *testing.T) {
+	rounds := 200
+	if testing.Short() {
+		rounds = 20
+	}
+	for round := 0; round < rounds; round++ {
+		rng := rand.New(rand.NewPCG(uint64(round), 11))
+		events := randomEvents(rng, 10+rng.IntN(120))
+		cfg := Config{Window: rng.Int64N(4), Hold: rng.Int64N(8), Remember: rng.Int64N(2) * rng.Int64N(20),
+			Windows: []ProducerWindow{{Producer: "p2", Window: 4 + rng.Int64N(30)}}}
+		if round%2 == 1 {
+			cfg.Windows = append(cfg.Windows, ProducerWindow{Producer: "p0", Window: rng.Int64N(3)})
+		}
+		want, wantStats := run(t, cfg, arrive(rng, events, 0), rng, false)
+		if wantStats.Out != uint64(len(events)) {
+			t.Fatalf("round %d: %d of %d events out", round, wantStats.Out, len(events))
+		}
+		for k := 0; k < 20; k++ {
+			got, st := run(t, cfg, arriveFor(rng, events, cfg), rng, k%2 == 1)
+			if got != want || st.MissingParents != wantStats.MissingParents {
+				t.Fatalf("round %d order %d (config %+v): %s, want %s", round, k, cfg, got, want)
+			}
+		}
+	}
+}
+
+// A producer's own window decides when its events are late; the others keep
+// Window. Release waits for the largest window.
+func TestProducerWindowLateness(t *testing.T) {
+	cfg := Config{Window: 2, Hold: 2, Windows: []ProducerWindow{{Producer: "slow", Window: 10}}}
+	o := mustNew(t, cfg)
+	push := func(id, p string, tm int64) (Status, []Released) {
+		s, rel, err := o.Push(ev(id, p, tm))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s, rel
+	}
+	if _, rel := push("a", "fast", 100); len(rel) != 0 {
+		t.Fatal("released before the widest window passed")
+	}
+	if s, _ := push("b", "fast", 97); s != Late {
+		t.Fatalf("a fast event 3 behind was %v, want late", s)
+	}
+	if s, _ := push("c", "slow", 91); s != Accepted {
+		t.Fatalf("a slow event 9 behind was %v, want accepted", s)
+	}
+	if s, _ := push("d", "slow", 89); s != Late {
+		t.Fatalf("a slow event 11 behind was %v, want late", s)
+	}
+	if wm, _ := o.Watermark(); wm != 90 {
+		t.Fatalf("watermark %d, want 90", wm)
+	}
+	if wm, _ := o.WatermarkFor("fast"); wm != 98 {
+		t.Fatalf("fast watermark %d, want 98", wm)
+	}
+	_, rel := push("e", "fast", 102)
+	if len(rel) != 1 || rel[0].Event.ID != "c" {
+		t.Fatalf("released %v, want c alone (below 92)", rel)
+	}
+	for _, bad := range []Config{
+		{Windows: []ProducerWindow{{Producer: "x", Window: -1}}},
+		{Windows: []ProducerWindow{{Producer: "x", Window: 1}, {Producer: "x", Window: 2}}},
+		{Windows: []ProducerWindow{{Producer: "", Window: 1}}},
+	} {
+		if _, err := New(bad); err == nil {
+			t.Fatalf("%+v was accepted", bad)
+		}
+	}
+	a := Config{Window: 1, Windows: []ProducerWindow{{"x", 1}, {"y", 2}}}
+	b := Config{Window: 1, Windows: []ProducerWindow{{"y", 2}, {"x", 1}}}
+	if !a.Equal(b) || a.Equal(Config{Window: 1}) {
+		t.Fatal("Config.Equal")
+	}
 }

@@ -8,7 +8,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"hash"
+	"sort"
+	"unicode/utf8"
 )
 
 // Config sets the bounds of an Orderer, in the units of Event.Time.
@@ -26,13 +29,65 @@ type Config struct {
 	// for spotting duplicates and finding parents. Zero keeps them all. A
 	// parent more than Remember older than its child counts as missing.
 	Remember int64 `json:"remember"`
+	// Windows gives some producers a window of their own, in place of
+	// Window. An event is late when its time is below the newest time seen
+	// minus its producer's window. Events are released below the newest time
+	// minus the largest window, so every on-time event still finds its place.
+	Windows []ProducerWindow `json:"windows,omitempty"`
+}
+
+// ProducerWindow is one producer's own window.
+type ProducerWindow struct {
+	Producer string `json:"producer"`
+	Window   int64  `json:"window"`
 }
 
 func (c Config) check() error {
 	if c.Window < 0 || c.Hold < 0 || c.Remember < 0 {
 		return errors.New("window, hold and remember can't be negative")
 	}
+	seen := map[string]bool{}
+	for _, w := range c.Windows {
+		if w.Window < 0 {
+			return fmt.Errorf("the window for producer %q can't be negative", w.Producer)
+		}
+		if w.Producer == "" || !utf8.ValidString(w.Producer) {
+			return errors.New("a producer window needs a producer name in UTF-8")
+		}
+		if seen[w.Producer] {
+			return fmt.Errorf("producer %q has two windows", w.Producer)
+		}
+		seen[w.Producer] = true
+	}
 	return nil
+}
+
+// Equal says whether two configs are the same, producer windows in any order.
+func (c Config) Equal(d Config) bool {
+	if c.Window != d.Window || c.Hold != d.Hold || c.Remember != d.Remember || len(c.Windows) != len(d.Windows) {
+		return false
+	}
+	m := map[string]int64{}
+	for _, w := range c.Windows {
+		m[w.Producer] = w.Window
+	}
+	for _, w := range d.Windows {
+		if v, ok := m[w.Producer]; !ok || v != w.Window {
+			return false
+		}
+	}
+	return true
+}
+
+// widest is the largest window: Window or a producer's.
+func (c Config) widest() int64 {
+	w := c.Window
+	for _, p := range c.Windows {
+		if p.Window > w {
+			w = p.Window
+		}
+	}
+	return w
 }
 
 // Status says what Push did with an event.
@@ -137,6 +192,8 @@ type releasedInfo struct {
 // Orderer orders events. It is not safe for concurrent use.
 type Orderer struct {
 	cfg     Config
+	windows map[string]int64 // producer windows, from cfg.Windows
+	widest  int64            // the largest window
 	seen    bool
 	maxSeen int64
 	final   bool
@@ -163,8 +220,16 @@ func New(cfg Config) (*Orderer, error) {
 	if err := cfg.check(); err != nil {
 		return nil, err
 	}
+	windows := map[string]int64{}
+	for _, w := range cfg.Windows {
+		windows[w.Producer] = w.Window
+	}
+	cfg.Windows = append([]ProducerWindow(nil), cfg.Windows...)
+	sort.Slice(cfg.Windows, func(i, j int) bool { return cfg.Windows[i].Producer < cfg.Windows[j].Producer })
 	return &Orderer{
 		cfg:       cfg,
+		windows:   windows,
+		widest:    cfg.widest(),
 		pending:   map[string]*node{},
 		waiters:   map[string][]*node{},
 		waitCount: map[string]int{},
@@ -174,10 +239,20 @@ func New(cfg Config) (*Orderer, error) {
 	}, nil
 }
 
-// Watermark is the newest time seen minus Window, and ok is false before
-// the first event.
+// Watermark is the newest time seen minus the largest window, below which
+// events are released, and ok is false before the first event. With no
+// producer windows that is Window.
 func (o *Orderer) Watermark() (wm int64, ok bool) {
-	return satSub(o.maxSeen, o.cfg.Window), o.seen
+	return satSub(o.maxSeen, o.widest), o.seen
+}
+
+// WatermarkFor is the time below which an event of this producer is late.
+func (o *Orderer) WatermarkFor(producer string) (wm int64, ok bool) {
+	w, has := o.windows[producer]
+	if !has {
+		w = o.cfg.Window
+	}
+	return satSub(o.maxSeen, w), o.seen
 }
 
 func (o *Orderer) passed(t int64) bool {
@@ -205,7 +280,7 @@ func (o *Orderer) Push(e Event) (Status, []Released, error) {
 	if r, ok := o.released[n.ident]; ok {
 		return o.same(r.sum == sha256.Sum256(n.canon)), nil, nil
 	}
-	if o.passed(e.Time) {
+	if wm, ok := o.WatermarkFor(e.Producer); ok && e.Time < wm {
 		o.stats.Late++
 		return Late, nil, nil
 	}

@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -106,6 +107,9 @@ func run(args []string) (int, error) {
 	fs.Var(&ins, "in", "an input file of NDJSON events; repeat it to read several files a line at a time in turn (default: standard input)")
 	out := fs.String("out", "-", "the output file; - is standard output")
 	rejects := fs.String("rejects", "", "a file for late, conflicting and invalid events, one JSON line each with the reason")
+	late := fs.String("late", "", "a file for late events alone, each as its canonical line, ready to be read again")
+	var windowFor multi
+	fs.Var(&windowFor, "window-for", "PRODUCER=N: a window of N for one producer in place of -window; repeat it for more")
 	window := fs.Int64("window", 0, "how far, in event-time units, an event may arrive behind the newest time seen")
 	hold := fs.Int64("hold", -1, "how long past its own time an event waits for a parent; -1 is the same as -window")
 	remember := fs.Int64("remember", 0, "how long behind the watermark released events are remembered for duplicates and parents (0: always)")
@@ -156,7 +160,15 @@ func run(args []string) (int, error) {
 		defer stop()
 	}
 	cfg := inorderly.Config{Window: *window, Hold: *hold, Remember: *remember}
-	r, err := newRunner(ctx, cfg, ins, *out, *rejects, *stateDir, *follow)
+	for _, w := range windowFor {
+		i := strings.LastIndex(w, "=")
+		n, err := strconv.ParseInt(w[i+1:], 10, 64)
+		if i <= 0 || err != nil || n < 0 {
+			return 2, fmt.Errorf("-window-for %q: give a producer and a window, as in -window-for sensor-7=5000", w)
+		}
+		cfg.Windows = append(cfg.Windows, inorderly.ProducerWindow{Producer: w[:i], Window: n})
+	}
+	r, err := newRunner(ctx, cfg, ins, *out, *rejects, *late, *stateDir, *follow)
 	if err != nil {
 		return 1, err
 	}

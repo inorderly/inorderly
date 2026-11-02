@@ -21,7 +21,10 @@ import (
 )
 
 // A NATS input is a JetStream stream, read through an ephemeral pull consumer
-// with no acks, from after the last stream sequence taken; ?subject= reads
+// from after the last stream sequence taken. Each batch is acked at its last
+// message (AckAll), which keeps the consumer's acks pending below its limit;
+// the stream sequence and the count still pending come from each message's
+// ack subject. ?subject= reads
 // only that subject. An output is published to the stream's subject (or
 // ?subject=) with a JetStream ack for every message and a Nats-Msg-Id, and
 // read back with the stream's last message on that subject.
@@ -291,6 +294,7 @@ type natsSource struct {
 	last     uint64
 	until    uint64
 	bounded  bool
+	drained  bool // a bounded read saw a message with nothing pending after it
 	buf      []Message
 	seqs     []uint64
 	done     bool
@@ -319,8 +323,8 @@ func openNATSSource(ctx context.Context, e *Endpoint, from, until string) (Sourc
 		s.done = true
 		return s, nil
 	}
-	cfg := map[string]interface{}{"ack_policy": "none", "mem_storage": true, "num_replicas": 1,
-		"inactive_threshold": int64(5 * time.Minute), "replay_policy": "instant"}
+	cfg := map[string]interface{}{"ack_policy": "all", "ack_wait": int64(time.Hour), "max_ack_pending": 10000,
+		"mem_storage": true, "num_replicas": 1, "inactive_threshold": int64(5 * time.Minute), "replay_policy": "instant"}
 	if last == 0 {
 		cfg["deliver_policy"] = "all"
 	} else {
@@ -345,15 +349,12 @@ func openNATSSource(ctx context.Context, e *Endpoint, from, until string) (Sourc
 // message or when the batch is full. It returns whether the server had none.
 func (s *natsSource) pull(wait time.Duration) (bool, error) {
 	const batch = 256
-	req := map[string]interface{}{"batch": batch}
 	if s.bounded {
-		req["no_wait"] = true
-	} else {
-		if wait < 10*time.Millisecond {
-			wait = 10 * time.Millisecond
-		}
-		req["expires"] = int64(wait)
+		wait = time.Second
+	} else if wait < 10*time.Millisecond {
+		wait = 10 * time.Millisecond
 	}
+	req := map[string]interface{}{"batch": batch, "expires": int64(wait)}
 	b, _ := json.Marshal(req)
 	nc := s.nc
 	reply := nc.nextReply()
@@ -365,6 +366,14 @@ func (s *natsSource) pull(wait time.Duration) (bool, error) {
 	}
 	nc.c.SetDeadline(time.Now().Add(wait + 30*time.Second))
 	got := 0
+	lastReply := ""
+	defer func() {
+		// Ack everything up to the last message taken.
+		if lastReply != "" {
+			fmt.Fprintf(nc.w, "PUB %s 0\r\n\r\n", lastReply)
+			nc.w.Flush()
+		}
+	}()
 	for got < batch {
 		op, m, err := nc.read()
 		if err != nil {
@@ -382,11 +391,12 @@ func (s *natsSource) pull(wait time.Duration) (bool, error) {
 			}
 			return false, fmt.Errorf("pull status %s", m.status)
 		}
-		seq, ok := ackSeq(m.reply)
+		seq, pending, ok := ackSeq(m.reply)
 		if !ok {
-			continue
+			return false, fmt.Errorf("a message without a JetStream ack subject (%q)", m.reply)
 		}
 		got++
+		lastReply = m.reply
 		prev := s.last
 		if len(s.seqs) > 0 {
 			prev = s.seqs[len(s.seqs)-1]
@@ -396,24 +406,30 @@ func (s *natsSource) pull(wait time.Duration) (bool, error) {
 		}
 		s.buf = append(s.buf, Message{Value: m.data, At: "seq " + strconv.FormatUint(seq, 10)})
 		s.seqs = append(s.seqs, seq)
+		if pending == 0 && s.bounded {
+			s.drained = true // nothing more is waiting: the rest of the batch won't come
+			return false, nil
+		}
 	}
 	return false, nil
 }
 
-// ackSeq reads the stream sequence from a JetStream ack subject, in either
-// form: $JS.ACK.<stream>.<consumer>.<delivered>.<sseq>... or the newer one
-// with a domain and account hash before the stream.
-func ackSeq(reply string) (uint64, bool) {
+// ackSeq reads the stream sequence and the number still pending from a
+// JetStream ack subject, in either form:
+// $JS.ACK.<stream>.<consumer>.<delivered>.<sseq>.<cseq>.<ts>.<pending> or the
+// newer one with a domain and account hash before the stream.
+func ackSeq(reply string) (seq, pending uint64, ok bool) {
 	t := strings.Split(reply, ".")
 	if len(t) < 9 || t[0] != "$JS" || t[1] != "ACK" {
-		return 0, false
+		return 0, 0, false
 	}
 	i := 5
 	if len(t) >= 11 {
 		i = 7
 	}
-	n, err := strconv.ParseUint(t[i], 10, 64)
-	return n, err == nil
+	seq, err1 := strconv.ParseUint(t[i], 10, 64)
+	pending, err2 := strconv.ParseUint(t[i+3], 10, 64)
+	return seq, pending, err1 == nil && err2 == nil
 }
 
 func (s *natsSource) Next(ctx context.Context, wait time.Duration) (Message, error) {
@@ -421,7 +437,7 @@ func (s *natsSource) Next(ctx context.Context, wait time.Duration) (Message, err
 		if err := ctx.Err(); err != nil {
 			return Message{}, err
 		}
-		if s.done {
+		if s.done || s.drained {
 			return Message{}, io.EOF
 		}
 		empty, err := s.pull(wait)

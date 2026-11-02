@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -261,7 +262,7 @@ func TestKilledAndResumed(t *testing.T) {
 	a := write(t, dir, "a.ndjson", append(ndjson(ea), []byte("garbage line\n")...))
 	b := write(t, dir, "b.ndjson", ndjson(eb))
 	flags := func(out, state string) []string {
-		return []string{"-in", a, "-in", b, "-out", out, "-rejects", out + ".rejects", "-window", "100",
+		return []string{"-in", a, "-in", b, "-out", out, "-rejects", out + ".rejects", "-late", out + ".late", "-window", "100",
 			"-remember", "2000", "-state", state, "-checkpoint-every", "997"}
 	}
 	clean := filepath.Join(dir, "clean.ndjson")
@@ -331,6 +332,11 @@ func TestKilledAndResumed(t *testing.T) {
 	yr, _ := os.ReadFile(out + ".rejects")
 	if !bytes.Equal(bytes.ReplaceAll(xr, []byte("clean"), []byte("killed")), yr) {
 		t.Fatal("the rejects differ")
+	}
+	xl, _ := os.ReadFile(clean + ".late")
+	yl, _ := os.ReadFile(out + ".late")
+	if !bytes.Equal(xl, yl) || len(lines(xl)) != int(ref.sum.Late) {
+		t.Fatalf("the late files differ or miss events: %d and %d lines, %d late", len(lines(xl)), len(lines(yl)), ref.sum.Late)
 	}
 	if last.sum.Hash != ref.sum.Hash || last.sum.Hash != sha(y) || last.sum.Invalid != 1 || last.sum.Late != ref.sum.Late {
 		t.Fatalf("summary %s, want hash %s", last.stderr, ref.sum.Hash)
@@ -508,7 +514,7 @@ func TestCompactionAfterAnInterruptedCompaction(t *testing.T) {
 	}
 	out, state := filepath.Join(dir, "out.ndjson"), filepath.Join(dir, "state")
 	start := func() *runner {
-		r, err := newRunner(context.Background(), cfg, []string{in}, out, "", state, false)
+		r, err := newRunner(context.Background(), cfg, []string{in}, out, "", "", state, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -569,5 +575,62 @@ func TestCompactionAfterAnInterruptedCompaction(t *testing.T) {
 	got, _ := os.ReadFile(out)
 	if !bytes.Equal(got, want.stdout) {
 		t.Fatal("the resumed run's output differs from an uninterrupted run")
+	}
+}
+
+// A slow producer with its own window: nothing it sends within that window
+// is late, and the output is what a window that wide for everyone gives.
+// Without it, its late events go to -late as lines that read back in.
+func TestWindowForAndLateFile(t *testing.T) {
+	dir := t.TempDir()
+	type arrival struct {
+		at int64
+		e  inorderly.Event
+	}
+	var list []arrival
+	for i := 0; i < 2000; i++ {
+		tm := int64(i * 3)
+		list = append(list, arrival{tm + int64(i%4), inorderly.Event{Producer: "fast", Seq: uint64(i + 1), Time: tm}})
+		list = append(list, arrival{tm + int64((i*37)%50), inorderly.Event{Producer: "slow", Seq: uint64(i + 1), Time: tm + 1}})
+	}
+	sort.SliceStable(list, func(i, j int) bool { return list[i].at < list[j].at })
+	var order []inorderly.Event
+	for _, a := range list {
+		order = append(order, a.e)
+	}
+	in := write(t, dir, "in.ndjson", ndjson(order))
+	wide := runCLI(t, nil, "-in", in, "-window", "50", "-hold", "5")
+	own := runCLI(t, nil, "-in", in, "-window", "5", "-hold", "5", "-window-for", "slow=50", "-strict")
+	if wide.code != 0 || own.code != 0 || !bytes.Equal(wide.stdout, own.stdout) || own.sum.Late != 0 || len(own.sum.Config.Windows) != 1 {
+		t.Fatalf("with -window-for: %d %s; wide: %s", own.code, own.stderr, wide.stderr)
+	}
+	late := filepath.Join(dir, "late.ndjson")
+	rej := filepath.Join(dir, "rej.ndjson")
+	tight := runCLI(t, nil, "-in", in, "-window", "5", "-hold", "5", "-late", late, "-rejects", rej)
+	if tight.code != 0 || tight.sum.Late == 0 {
+		t.Fatalf("no late events without -window-for: %s", tight.stderr)
+	}
+	lb, _ := os.ReadFile(late)
+	if n := len(lines(lb)); uint64(n) != tight.sum.Late || bytes.Contains(lb, []byte(`"fast"`)) {
+		t.Fatalf("the late file has %d lines for %d late events", n, tight.sum.Late)
+	}
+	back := runCLI(t, nil, "-in", late, "-window", "1000000", "-strict")
+	if back.code != 0 || back.sum.Ordered != tight.sum.Late || back.sum.Invalid != 0 {
+		t.Fatalf("the late file didn't read back: %s", back.stderr)
+	}
+	rb, _ := os.ReadFile(rej)
+	first := lines(rb)[0]
+	var r struct {
+		Reason    string  `json:"reason"`
+		Watermark *int64  `json:"watermark"`
+		After     *uint64 `json:"after"`
+	}
+	if json.Unmarshal(first, &r) != nil || r.Reason != "late" || r.Watermark == nil || r.After == nil {
+		t.Fatalf("a late reject: %s", first)
+	}
+	for _, bad := range [][]string{{"-window-for", "slow"}, {"-window-for", "=5"}, {"-window-for", "x=-1"}, {"-window-for", "x=1", "-window-for", "x=2"}} {
+		if r := runCLI(t, nil, append([]string{"-in", in}, bad...)...); r.code == 0 {
+			t.Fatalf("%v was accepted", bad)
+		}
 	}
 }

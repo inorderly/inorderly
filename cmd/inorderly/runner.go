@@ -40,6 +40,8 @@ type checkpoint struct {
 	OutPos      uint64              `json:"out_pos,omitempty"` // a broker output: the last pos stored
 	Rejects     string              `json:"rejects"`
 	RejectsSize int64               `json:"rejects_size"`
+	Late        string              `json:"late,omitempty"`
+	LateSize    int64               `json:"late_size,omitempty"`
 	Invalid     uint64              `json:"invalid"`
 	Log         string              `json:"released_log"`
 	LogSize     int64               `json:"released_log_size"`
@@ -152,6 +154,8 @@ type runner struct {
 	out      output
 	rejFile  *os.File
 	rej      *countingWriter
+	lateFile *os.File
+	late     *countingWriter
 	logFile  *os.File // with -state: the record of every released event
 	log      *countingWriter
 	logName  string
@@ -171,7 +175,7 @@ type runner struct {
 // The wait for each followed input in turn when there is nothing new.
 const followWait = 200 * time.Millisecond
 
-func newRunner(ctx context.Context, cfg inorderly.Config, ins []string, out, rejects, stateDir string, follow bool) (*runner, error) {
+func newRunner(ctx context.Context, cfg inorderly.Config, ins []string, out, rejects, late, stateDir string, follow bool) (*runner, error) {
 	r := &runner{stateDir: stateDir, follow: follow}
 	names := make([]string, len(ins))
 	eps := make([]*broker.Endpoint, len(ins))
@@ -209,16 +213,19 @@ func newRunner(ctx context.Context, cfg inorderly.Config, ins []string, out, rej
 	if out != "-" && rejects != "" && outName == absPath(rejects) {
 		return nil, errors.New("-out and -rejects are the same file")
 	}
-	if rejects != "" && broker.IsURL(rejects) {
-		return nil, errors.New("-rejects is a file")
+	if (rejects != "" && broker.IsURL(rejects)) || (late != "" && broker.IsURL(late)) {
+		return nil, errors.New("-rejects and -late are files")
+	}
+	if late != "" && ((out != "-" && absPath(late) == outName) || absPath(late) == absPath(rejects)) {
+		return nil, errors.New("-late can't be the same file as -out or -rejects")
 	}
 	for _, a := range names {
-		if (out != "-" && a == outName) || (rejects != "" && a == absPath(rejects)) {
+		if (out != "-" && a == outName) || (rejects != "" && a == absPath(rejects)) || (late != "" && a == absPath(late)) {
 			return nil, fmt.Errorf("%s is both an input and an output", a)
 		}
 	}
 	r.cp = checkpoint{Format: checkpointFormat, Version: inorderly.Version, Config: cfg, Inputs: names,
-		Out: outName, Rejects: absPath(rejects), Follow: follow}
+		Out: outName, Rejects: absPath(rejects), Late: absPath(late), Follow: follow}
 
 	var old *checkpoint
 	if stateDir != "" {
@@ -356,6 +363,9 @@ func newRunner(ctx context.Context, cfg inorderly.Config, ins []string, out, rej
 		if err == nil && rejects != "" {
 			r.rejFile, r.rej, err = reopen(rejects, old.RejectsSize)
 		}
+		if err == nil && late != "" {
+			r.lateFile, r.late, err = reopen(late, old.LateSize)
+		}
 		r.logName = old.Log
 		if err == nil {
 			r.logFile, r.log, err = reopen(r.logPath(), old.LogSize)
@@ -386,6 +396,9 @@ func newRunner(ctx context.Context, cfg inorderly.Config, ins []string, out, rej
 		}
 		if err == nil && rejects != "" {
 			r.rejFile, r.rej, err = reopen(rejects, 0)
+		}
+		if err == nil && late != "" {
+			r.lateFile, r.late, err = reopen(late, 0)
 		}
 		if err == nil && stateDir != "" {
 			r.logName = "released-1.ndjson"
@@ -505,7 +518,7 @@ func (r *runner) matches(old *checkpoint) error {
 	if old.Format != checkpointFormat {
 		return fmt.Errorf("the checkpoint in %s has format %d; this inorderly reads format %d", r.stateDir, old.Format, checkpointFormat)
 	}
-	same := old.Config == r.cp.Config && old.Out == r.cp.Out && old.Rejects == r.cp.Rejects && len(old.Inputs) == len(r.cp.Inputs) && old.Follow == r.cp.Follow
+	same := old.Config.Equal(r.cp.Config) && old.Out == r.cp.Out && old.Rejects == r.cp.Rejects && old.Late == r.cp.Late && len(old.Inputs) == len(r.cp.Inputs) && old.Follow == r.cp.Follow
 	for i := 0; same && i < len(old.Inputs); i++ {
 		same = old.Inputs[i] == r.cp.Inputs[i]
 	}
@@ -568,6 +581,9 @@ func (r *runner) close() {
 	if r.rejFile != nil {
 		r.rejFile.Close()
 	}
+	if r.lateFile != nil {
+		r.lateFile.Close()
+	}
 	if r.logFile != nil {
 		r.logFile.Close()
 	}
@@ -614,13 +630,15 @@ func (r *runner) nextLine(ctx context.Context) (*lineReader, []byte, bool, error
 }
 
 type reject struct {
-	Reason string          `json:"reason"`
-	Input  string          `json:"input"`
-	Line   uint64          `json:"line"`
-	At     string          `json:"at,omitempty"`
-	Error  string          `json:"error,omitempty"`
-	Raw    string          `json:"raw,omitempty"`
-	Event  json.RawMessage `json:"event,omitempty"`
+	Reason    string          `json:"reason"`
+	Input     string          `json:"input"`
+	Line      uint64          `json:"line"`
+	At        string          `json:"at,omitempty"`
+	Watermark *int64          `json:"watermark,omitempty"` // late: the time it had to reach
+	After     *uint64         `json:"after,omitempty"`     // late: the lines written when it came
+	Error     string          `json:"error,omitempty"`
+	Raw       string          `json:"raw,omitempty"`
+	Event     json.RawMessage `json:"event,omitempty"`
 }
 
 func (r *runner) reject(rej reject) error {
@@ -750,8 +768,18 @@ func (r *runner) handle(ctx context.Context, in *lineReader, line []byte) error 
 	if err := r.write(ctx, rel); err != nil {
 		return err
 	}
-	if status == inorderly.Late || status == inorderly.Conflict {
-		return r.reject(reject{Reason: status.String(), Input: in.path, Line: in.line, At: in.at, Event: ev.Canonical()})
+	switch status {
+	case inorderly.Late:
+		wm, _ := r.eng.WatermarkFor(ev.Producer)
+		after := r.eng.Stats().Out
+		if r.late != nil {
+			if err := r.late.write(ev.Canonical()); err != nil {
+				return err
+			}
+		}
+		return r.reject(reject{Reason: "late", Input: in.path, Line: in.line, At: in.at, Watermark: &wm, After: &after, Event: ev.Canonical()})
+	case inorderly.Conflict:
+		return r.reject(reject{Reason: "conflict", Input: in.path, Line: in.line, At: in.at, Event: ev.Canonical()})
 	}
 	return nil
 }
@@ -775,6 +803,11 @@ func (r *runner) flush(ctx context.Context) error {
 			return err
 		}
 	}
+	if r.late != nil {
+		if err := r.late.w.Flush(); err != nil {
+			return err
+		}
+	}
 	if r.log != nil {
 		if err := r.log.w.Flush(); err != nil {
 			return err
@@ -793,7 +826,7 @@ func (r *runner) checkpoint(ctx context.Context, finished bool) error {
 	if err := r.out.durable(ctx); err != nil {
 		return err
 	}
-	for _, f := range []*os.File{r.rejFile, r.logFile} {
+	for _, f := range []*os.File{r.rejFile, r.lateFile, r.logFile} {
 		if f != nil {
 			if err := f.Sync(); err != nil {
 				return err
@@ -813,6 +846,9 @@ func (r *runner) checkpoint(ctx context.Context, finished bool) error {
 	}
 	if r.rej != nil {
 		cp.RejectsSize = r.rej.n
+	}
+	if r.late != nil {
+		cp.LateSize = r.late.n
 	}
 	cp.Invalid = r.invalid
 	cp.LogSize = r.log.n
