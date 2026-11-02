@@ -176,6 +176,8 @@ written by `sh scripts/record-tests.sh`.
   with clocks behind their parent's), reports all 1,044 orphans,
   and merges two copies of a 100,000-tick feed, each missing about 5%,
   reporting exactly the 247 ticks lost from both.
+- **Brokers.** The same promise with Redis, Valkey, NATS JetStream and Kafka on both ends, against real servers in CI: a run killed with SIGKILL 10 times on each, at random moments after a checkpoint, ends with the output of a run never interrupted, each line once. Restarts after a gap, a stranger's line or an emptied output are refused. A Kafka input of three partitions is read the same way every time.
+- **Slow producers.** 200 random event sets with one producer on a window of its own, each fed in 20 arrival orders with snapshots along the way: one output per set.
 - **The use cases.** The four examples, each ordered in two or three arrival
   orders from the library and again with the command from their files: one
   hash per example.
