@@ -105,9 +105,9 @@ Design decisions:
   minus its own window; the others keep the tight one. Release waits for the
   largest window, which keeps the output the same whatever the arrival order;
   CONTRACT.md gets the rule first. Late events to a side file: `-late FILE`
-  writes each late event in canonical form with `after`, the `pos` of the
-  last line released before its own point, so it can be reconciled or fed to
-  a later run.
+  writes each late event as its canonical line, so the file can be fed to a
+  later run as it is; the rejects file gives each late line `watermark` (the
+  time it had to reach) and `after` (the lines written when it came).
 - Upkeep: go.mod to go 1.26. Version 0.2.0.
 - Testing: protocol encoders and decoders against byte fixtures; real servers
   where they can run (Redis from source here; Redis, NATS and Kafka as service
@@ -117,11 +117,11 @@ Steps:
 1. [x] Upkeep: go.mod 1.26.
 2. [x] Input and output layer (cmd/inorderly/runner.go: lineReader takes a broker.Source, output is a file or a broker sink); checkpoint keeps positions and the bounded end per broker input, and out_pos; a first checkpoint is written at start so a run killed early carries on; -follow (needs -state, brokers only), SIGINT/SIGTERM checkpoint and stop with "stopped": true; -checkpoint-interval.
 3. [x] Redis Streams in and out (internal/broker/redis.go), tests in cmd/inorderly/broker_test.go against real Redis 7.2.17: same output as files, output stream equals the file output, a full output refused, 10 SIGKILLs with brokers on both ends end with the uninterrupted output, -follow over two sessions, a foreign last entry refused.
-4. [ ] NATS JetStream in and out, with tests (CI service).
-5. [ ] Kafka in and out, with tests (CI service).
-6. [ ] Kill-and-resume tests with brokers on both ends.
-7. [ ] Phase B: -window-for and -late, contract first, with determinism tests.
-8. [ ] README, CONTRACT.md, REFERENCE.md, smoke.
+4. [x] NATS JetStream in and out (internal/broker/nats.go): pull consumer with AckAll acked per batch; positions are stream sequences read from each delivery's ack subject, which also says how many are pending (a bounded read ends there). Deliveries keep their original subject and come on the inbox subscription, matched by ack subject; found with a server trace in CI.
+5. [x] Kafka in and out (internal/broker/kafka.go): Metadata v7, ListOffsets v4, Fetch v10, Produce v7, CreateTopics v3, record batch v2 (CRC32C), gzip read, TLS, SASL PLAIN and SCRAM (RFC 7677 vector). Three-partition input test; one-partition output enforced.
+6. [x] CI job `brokers` (Redis 8, Valkey 9, NATS 2.12 with JetStream, Kafka 4.1.0 KRaft): in and out, 10 SIGKILLs with brokers on both ends ending with the uninterrupted output, -follow over two sessions, foreign last message refused, all green on each.
+7. [x] Phase B: Config.Windows / -window-for (late per producer, release at the widest window; 200 random sets x 20 orders with snapshots), -late FILE (late events as canonical lines; read back in); late rejects carry watermark and after. Plan change: `after` is the number of lines written when the late event came (well defined and cheap), not a position search.
+8. [x] README (brokers, slow producers), CONTRACT.md (promise and watermark with producer windows), REFERENCE.md (flags, broker URLs, reading, writing, restarting, limits), smoke.py (-window-for, -late, unreachable broker).
 9. [ ] Independent review (at most two rounds), fixes, fresh test/results.
 10. [ ] 0.2.0 released by the workflow, downloads checked.
 11. [ ] inorderly.com post with its own SVG, pages; softdevstudio.com note; softdev-plan log row.

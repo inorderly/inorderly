@@ -83,7 +83,9 @@ jobs:
           status=0
           INORDERLY_TEST_REDIS=localhost:6379 INORDERLY_TEST_NATS=localhost:4222 INORDERLY_TEST_KAFKA=localhost:9092 run 'Test' || status=1
           INORDERLY_TEST_REDIS=localhost:6380 run 'Broker' || status=1
-          grep -E '^\s+[a-z_]+_test\.go:[0-9]+:|--- FAIL|^panic|^FAIL' broker-test.log | head -40 | while IFS= read -r l; do echo "::error::${l}"; done
+          if [ $status != 0 ]; then
+            grep -E '^\s+[a-z_]+_test\.go:[0-9]+:|--- FAIL|^panic|^FAIL' broker-test.log | grep -v 'is not set' | head -40 | while IFS= read -r l; do echo "::error::${l}"; done
+          fi
           grep -E 'kills,' broker-test.log | while IFS= read -r l; do echo "::notice::${l}"; done
           exit $status
       - name: NATS trace when the tests fail
