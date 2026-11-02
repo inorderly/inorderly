@@ -132,40 +132,55 @@ standard library; there is nothing else to install.
 
 | URL | What it reads or writes |
 |---|---|
-| `redis://[user:pass@]host[:6379]/stream` | A Redis stream. Each entry keeps the line in the field `event`, or the one `?field=` names. `?db=N` selects a database. Redis 6.2 or newer, or Valkey. |
+| `redis://[user:pass@]host[:6379]/stream` | A Redis stream. Each entry keeps the line in the field `event`, or the one `?field=` names. `?db=N` selects a database. A password alone is `redis://:pass@host`. Redis 6.2 or newer, or Valkey. |
 | `nats://[user:pass@]host[:4222]/stream` | A JetStream stream. `?subject=` reads only that subject, and names the subject an output is written to when the stream has more than one. A user without a password is a token. |
 | `kafka://[user:pass@]host[:9092]/topic` | A Kafka topic, every partition. With a user, SASL PLAIN, or `?sasl=scram-sha-256` or `scram-sha-512`. Kafka 2.1 or newer. |
 
 `rediss://`, `tls://` and `kafkas://` use TLS, checking the server's
-certificate unless `?insecure=true`. Passwords are never written to a
-checkpoint, a rejects file or a message.
+certificate unless `?insecure=true`. Passwords and NATS tokens are never
+written to a checkpoint, a rejects file or a message.
 
 **Reading.** Each message is one input line. Inorderly reads without a
 consumer group: it keeps where each input had got to (the Redis entry ID, the
-JetStream stream sequence, the next offset of each Kafka partition) in its own
-checkpoint. A Kafka input takes its partitions a message at a time in turn.
+JetStream stream sequence, the next offset of each Kafka partition and whose
+turn it is) in its own checkpoint. A Kafka input takes its partitions a
+message at a time in turn, and reads committed records only: records of an
+aborted transaction are left out. A JetStream input uses a consumer of its
+own, made again if the server drops it.
 Without `-follow`, a run reads up to the end each input had when it started,
 then flushes, as with files, and a restarted run reads to that same end. With
 `-follow`, it keeps reading and releasing as the watermark moves, and never
 flushes: what is still held waits in the checkpoint for the next run.
 
-**Writing.** One message per output line, in order: a Redis entry with the ID
-`<pos>-1`, so Redis itself refuses a line written twice; a JetStream message
-on one subject, acked, with the `Nats-Msg-Id` `<subject>:<pos>`; a Kafka record
-with `acks=all`, on a topic of exactly one partition, so its order is the
-output's. A run without a checkpoint refuses an output that already holds
-messages.
+**Writing.** One message per output line, in order: Redis entries with the
+ID `<pos>-1`, each batch in one `MULTI`/`EXEC`, so a refused batch stores none
+of its lines; JetStream messages on one subject, each acked, with the
+`Nats-Msg-Id` `<subject>:<pos>` (an ack that calls one a duplicate stops the
+run); Kafka records with `acks=all`, on a topic of exactly one partition, so
+its order is the output's, never sent twice by Inorderly itself. A run
+without a checkpoint refuses an output that already holds messages.
 
 **Restarting.** A broker output can't be cut back to the checkpoint the way
-a file is. Instead, a restarted run reads the output's last message, which
-names its `pos`, and doesn't write the lines up to there again. The line it
-makes at that `pos` must be the one stored, or it stops: something else
-writes there. So a run killed at any moment, with brokers on both ends,
-leaves the output it would have left without the kill, each line once.
+a file is. So each checkpoint also keeps the output's own position, and a
+restarted run reads back every line stored after it. Their `pos` must follow
+on from the checkpoint with nothing missing or repeated, and each must be the
+line the restarted run makes at that `pos`; those are not written again. When
+a run ends, it reads back everything written since it started and checks the
+same way. If any check fails, the run stops with an error rather than leave
+a gap, a repeat or someone else's line in the output.
 
-**What it doesn't do.** Kafka records are read uncommitted, without
-transaction markers; batches compressed with gzip are read, and snappy, lz4
-or zstd batches are refused by name. Outputs are written uncompressed. A
+So without `-follow`, a run killed at any moment, with brokers on both ends,
+ends with the output an uninterrupted run would have written, each line once,
+or stops and says why. The case that stops it: a Kafka write cut off by the
+kill that the broker still commits after the restart has written those lines
+again. With `-follow`, the arrival order after a restart depends on timing,
+so when events come late a restarted run can make different lines from the
+ones a killed run stored after its last checkpoint, and it stops. A run
+stopped with SIGINT or SIGTERM writes a checkpoint first and never meets this;
+a short `-checkpoint-interval` keeps the window small for a kill.
+
+**What it doesn't do.** Kafka batches compressed with gzip are read, and
+snappy, lz4 or zstd batches are refused by name. Outputs are written uncompressed. A
 Kafka partition added after a run started isn't read by that run. Inorderly
 doesn't create streams or topics.
 

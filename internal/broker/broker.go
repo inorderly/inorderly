@@ -80,6 +80,9 @@ func Parse(s string) (*Endpoint, error) {
 		e.User = u.User.Username()
 		e.Pass, _ = u.User.Password()
 	}
+	if e.User != "" && e.Pass == "" && e.Kind != "nats" {
+		return nil, fmt.Errorf("%s: a user needs a password, as in %s://user:password@%s", redact(s), u.Scheme, u.Host)
+	}
 	e.Name = strings.TrimPrefix(u.Path, "/")
 	if e.Name == "" || strings.Contains(e.Name, "/") {
 		return nil, fmt.Errorf("%s: name one %s after the host, as in %s://%s/events", redact(s), map[string]string{"redis": "stream", "nats": "stream", "kafka": "topic"}[e.Kind], u.Scheme, u.Host)
@@ -105,7 +108,7 @@ func (e *Endpoint) String() string {
 		scheme = map[string]string{"redis": "rediss", "nats": "tls", "kafka": "kafkas"}[e.Kind]
 	}
 	u := url.URL{Scheme: scheme, Host: e.Host, Path: "/" + e.Name, RawQuery: e.Query.Encode()}
-	if e.User != "" {
+	if e.User != "" && !(e.Kind == "nats" && e.Pass == "") { // a NATS user alone is a token
 		u.User = url.User(e.User)
 	}
 	return u.String()
@@ -113,7 +116,11 @@ func (e *Endpoint) String() string {
 
 func redact(s string) string {
 	if u, err := url.Parse(s); err == nil && u.User != nil {
-		u.User = url.User(u.User.Username())
+		if _, has := u.User.Password(); !has && schemes[strings.ToLower(u.Scheme)].kind == "nats" {
+			u.User = nil
+		} else {
+			u.User = url.User(u.User.Username())
+		}
 		return u.String()
 	}
 	return s
@@ -147,7 +154,36 @@ type Sink interface {
 	Write(ctx context.Context, pos uint64, line []byte) error
 	// Flush returns once every queued line is stored.
 	Flush(ctx context.Context) error
+	// Mark is the output's own position now: what Each reads on from.
+	Mark(ctx context.Context) (string, error)
+	// Each calls f with every line stored after the mark, in order.
+	Each(ctx context.Context, after string, f func(line []byte) error) error
 	Close() error
+}
+
+// each reads a stream or topic from after a position to its end now.
+func each(ctx context.Context, e *Endpoint, after string, f func(Message) error) error {
+	until, err := End(ctx, e)
+	if err != nil {
+		return err
+	}
+	src, err := OpenSource(ctx, e, after, until)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	for {
+		m, err := src.Next(ctx, 0)
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := f(m); err != nil {
+			return err
+		}
+	}
 }
 
 // End returns the position just after the last message an input holds now:
@@ -246,26 +282,12 @@ func Produce(ctx context.Context, e *Endpoint, values [][]byte) error {
 // ReadAll returns every message value a stream or topic holds, in order
 // (for Kafka, partition 0 then the others).
 func ReadAll(ctx context.Context, e *Endpoint) ([][]byte, error) {
-	until, err := End(ctx, e)
-	if err != nil {
-		return nil, err
-	}
-	src, err := OpenSource(ctx, e, "", until)
-	if err != nil {
-		return nil, err
-	}
-	defer src.Close()
 	var out [][]byte
-	for {
-		m, err := src.Next(ctx, 0)
-		if err == io.EOF {
-			return out, nil
-		}
-		if err != nil {
-			return nil, err
-		}
+	err := each(ctx, e, "", func(m Message) error {
 		out = append(out, m.Value)
-	}
+		return nil
+	})
+	return out, err
 }
 
 // Ensure creates a NATS stream (with one subject of the same name) or a

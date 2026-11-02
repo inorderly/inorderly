@@ -386,3 +386,60 @@ func TestKafkaPartitions(t *testing.T) {
 }
 
 var _ = inorderly.Version
+
+// After a checkpoint, the output must go on from the checkpoint's pos with no
+// gap, and each stored line must be the one the run makes. A run stopped with
+// SIGTERM is restarted after a line is planted in its output: a gap, or a
+// different line at the next pos. Both are refused.
+func TestBrokerOutputCheckedOnRestart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("signals are a Unix test")
+	}
+	eachBroker(t, func(t *testing.T, newURL func(string) string) {
+		for _, tc := range []struct{ name, plant, want string }{
+			{"gap", `{"pos":%d,"producer":"x","seq":1,"time":1}`, "missing or there twice"},
+			{"different", `{"pos":%d,"producer":"x","seq":1,"time":1}`, "different line"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				a, _ := brokerSet(2000)
+				a = a[:len(a)-1]
+				ui, uo := newURL("in"), newURL("out")
+				state := filepath.Join(dir, "state")
+				args := []string{"-in", ui, "-out", uo, "-window", "100", "-state", state, "-follow"}
+				produce(t, ui, a[:1000])
+				cmd := exec.Command(bin, args...)
+				var errb bytes.Buffer
+				cmd.Stderr = &errb
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				for i := 0; i < 100 && len(readAll(t, uo)) == 0; i++ {
+					time.Sleep(100 * time.Millisecond)
+				}
+				cmd.Process.Signal(syscall.SIGTERM)
+				if err := cmd.Wait(); err != nil {
+					t.Fatalf("%v %s", err, errb.String())
+				}
+				var cp checkpoint
+				b, _ := os.ReadFile(filepath.Join(state, "checkpoint.json"))
+				if json.Unmarshal(b, &cp) != nil || cp.OutPos == 0 || cp.OutMark == "" {
+					t.Fatalf("checkpoint: out_pos %d, out_mark %q", cp.OutPos, cp.OutMark)
+				}
+				next := cp.OutPos + 1
+				if tc.name == "gap" {
+					next++
+				}
+				produce(t, uo, [][]byte{[]byte(fmt.Sprintf(tc.plant, next))})
+				produce(t, ui, a[1000:])
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				r := exec.CommandContext(ctx, bin, args...)
+				out, _ := r.CombinedOutput()
+				if r.ProcessState == nil || r.ProcessState.ExitCode() != 1 || !strings.Contains(string(out), tc.want) {
+					t.Fatalf("restart after a planted line: %v %s", r.ProcessState, out)
+				}
+			})
+		}
+	})
+}

@@ -183,7 +183,7 @@ func (kc *kafkaConn) call(api, version int16, body []byte, timeout time.Duration
 		return nil, err
 	}
 	n := binary.BigEndian.Uint32(sz[:])
-	if n < 4 || n > 256<<20 {
+	if n < 4 || n > 64<<20 {
 		return nil, errors.New("kafka: a bad response size")
 	}
 	resp := make([]byte, n)
@@ -322,7 +322,7 @@ func (k *kafkaClient) metadata() error {
 func (k *kafkaClient) leader(ctx context.Context, p int32) (*kafkaConn, error) {
 	id, ok := k.leaders[p]
 	if !ok || id < 0 {
-		return nil, fmt.Errorf("kafka topic %s: partition %d has no leader", k.e.Name, p)
+		return nil, errNoLeader
 	}
 	if c := k.conns[id]; c != nil {
 		return c, nil
@@ -339,14 +339,24 @@ func (k *kafkaClient) leader(ctx context.Context, p int32) (*kafkaConn, error) {
 	return c, nil
 }
 
+// errNoLeader: the metadata names no leader for a partition, for a moment.
+var errNoLeader = errors.New("no leader")
+
 // retry runs f, refreshing the leaders and trying again when leadership moved.
-func (k *kafkaClient) retry(f func() (int16, error)) error {
+// A timeout (7) is retried only when f is safe to repeat: a produce that timed
+// out may have been written, and must not be sent twice.
+func (k *kafkaClient) retry(f func() (int16, error)) error { return k.retryIf(true, f) }
+
+func (k *kafkaClient) retryIf(repeatable bool, f func() (int16, error)) error {
 	for attempt := 0; ; attempt++ {
 		code, err := f()
+		if errors.Is(err, errNoLeader) {
+			code, err = 5, nil
+		}
 		if err == nil && code == 0 {
 			return nil
 		}
-		if err == nil && (code == 5 || code == 6 || code == 7) && attempt < 5 {
+		if err == nil && (code == 5 || code == 6 || (code == 7 && repeatable)) && attempt < 8 {
 			time.Sleep(time.Duration(200*(attempt+1)) * time.Millisecond)
 			for id, c := range k.conns {
 				c.Close()
@@ -376,7 +386,7 @@ func (k *kafkaClient) offsets(ctx context.Context, at int64) (map[int32]int64, e
 			}
 			req := kenc{}
 			req.i32(-1)
-			req.i8(0)
+			req.i8(1) // read committed: the end is the last stable offset
 			req.i32(1)
 			req.str(k.e.Name)
 			req.i32(1)
@@ -408,6 +418,8 @@ func (k *kafkaClient) offsets(ctx context.Context, at int64) (map[int32]int64, e
 	return out, nil
 }
 
+type abortedTxn struct{ pid, first int64 }
+
 type kafkaRecord struct {
 	offset int64
 	value  []byte
@@ -428,7 +440,7 @@ func (k *kafkaClient) fetch(ctx context.Context, p int32, offset int64, wait tim
 		req.i32(int32(wait.Milliseconds()))
 		req.i32(1)
 		req.i32(8 << 20)
-		req.i8(0) // read uncommitted
+		req.i8(1) // read committed
 		req.i32(0)
 		req.i32(-1) // no fetch session
 		req.i32(1)
@@ -458,14 +470,14 @@ func (k *kafkaClient) fetch(ctx context.Context, p int32, offset int64, wait tim
 				d.i64()
 				d.i64()
 				d.i64()
+				var aborted []abortedTxn
 				for q, r := 0, d.array(); q < r; q++ {
-					d.i64()
-					d.i64()
+					aborted = append(aborted, abortedTxn{pid: d.i64(), first: d.i64()})
 				}
 				records := d.bytes()
 				if d.err == nil && code == 0 {
 					var err error
-					if recs, after, err = decodeBatches(records, offset); err != nil {
+					if recs, after, err = decodeBatches(records, offset, aborted...); err != nil {
 						return 0, fmt.Errorf("kafka topic %s partition %d: %v", k.e.Name, p, err)
 					}
 				}
@@ -478,9 +490,11 @@ func (k *kafkaClient) fetch(ctx context.Context, p int32, offset int64, wait tim
 
 // decodeBatches reads record batches (magic 2), skipping records before from,
 // transaction markers, and a batch cut short at the end.
-func decodeBatches(b []byte, from int64) ([]kafkaRecord, int64, error) {
+func decodeBatches(b []byte, from int64, aborted ...abortedTxn) ([]kafkaRecord, int64, error) {
 	var out []kafkaRecord
 	after := from
+	sort.Slice(aborted, func(i, j int) bool { return aborted[i].first < aborted[j].first })
+	open := map[int64]bool{} // producers whose current transaction was aborted
 	for len(b) >= 17 {
 		base := int64(binary.BigEndian.Uint64(b))
 		length := int(int32(binary.BigEndian.Uint32(b[8:])))
@@ -505,8 +519,18 @@ func decodeBatches(b []byte, from int64) ([]kafkaRecord, int64, error) {
 		attrs := int16(binary.BigEndian.Uint16(batch[9:]))
 		count := int(int32(binary.BigEndian.Uint32(batch[45:])))
 		recs := batch[49:]
+		pid := int64(binary.BigEndian.Uint64(batch[31:]))
+		lastOff := base + int64(int32(binary.BigEndian.Uint32(batch[11:])))
+		for len(aborted) > 0 && aborted[0].first <= lastOff {
+			open[aborted[0].pid] = true
+			aborted = aborted[1:]
+		}
 		if attrs&0x20 != 0 {
-			continue // a transaction marker
+			delete(open, pid) // a transaction marker ends the producer's transaction
+			continue
+		}
+		if attrs&0x10 != 0 && open[pid] {
+			continue // part of an aborted transaction
 		}
 		switch codec := attrs & 7; codec {
 		case 0:
@@ -594,7 +618,7 @@ func encodeBatch(values [][]byte, now int64) []byte {
 // produce writes values to a partition with acks=all.
 func (k *kafkaClient) produce(ctx context.Context, p int32, values [][]byte) error {
 	batch := encodeBatch(values, time.Now().UnixMilli())
-	return k.retry(func() (int16, error) {
+	return k.retryIf(false, func() (int16, error) {
 		c, err := k.leader(ctx, p)
 		if err != nil {
 			return 0, err
@@ -678,6 +702,16 @@ type kafkaSource struct {
 }
 
 func openKafkaSource(ctx context.Context, e *Endpoint, from, until string) (Source, error) {
+	// A position is the next offset of each partition and, after "@", whose
+	// turn it is, so a resumed read takes the partitions in the same turn.
+	turn := 0
+	if i := strings.LastIndex(from, "@"); i >= 0 {
+		t, err := strconv.Atoi(from[i+1:])
+		if err != nil || t < 0 {
+			return nil, fmt.Errorf("kafka topic %s: a damaged position %q", e.Name, from)
+		}
+		turn, from = t, from[:i]
+	}
 	next, err := parseOffsets(from)
 	if err != nil {
 		return nil, fmt.Errorf("kafka topic %s: %v", e.Name, err)
@@ -690,7 +724,7 @@ func openKafkaSource(ctx context.Context, e *Endpoint, from, until string) (Sour
 	if err != nil {
 		return nil, err
 	}
-	s := &kafkaSource{k: k, next: next, until: end, bounded: until != "", buf: map[int32][]kafkaRecord{}}
+	s := &kafkaSource{k: k, next: next, until: end, bounded: until != "", buf: map[int32][]kafkaRecord{}, turn: turn}
 	if from == "" {
 		if s.next, err = k.offsets(ctx, -2); err != nil {
 			k.Close()
@@ -798,7 +832,9 @@ func (s *kafkaSource) Next(ctx context.Context, wait time.Duration) (Message, er
 	return Message{}, ErrIdle
 }
 
-func (s *kafkaSource) Position() string { return formatOffsets(s.k.parts, s.next) }
+func (s *kafkaSource) Position() string {
+	return formatOffsets(s.k.parts, s.next) + "@" + strconv.Itoa(s.turn%len(s.k.parts))
+}
 
 func (s *kafkaSource) Close() error { return s.k.Close() }
 
@@ -881,6 +917,12 @@ func (s *kafkaSink) Flush(ctx context.Context) error {
 }
 
 func (s *kafkaSink) Close() error { return s.k.Close() }
+
+func (s *kafkaSink) Mark(ctx context.Context) (string, error) { return kafkaEnd(ctx, s.k.e) }
+
+func (s *kafkaSink) Each(ctx context.Context, after string, f func([]byte) error) error {
+	return each(ctx, s.k.e, after, func(m Message) error { return f(m.Value) })
+}
 
 // kafkaProduce spreads the values over the partitions in turn.
 func kafkaProduce(ctx context.Context, e *Endpoint, values [][]byte) error {

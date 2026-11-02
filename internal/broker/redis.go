@@ -94,8 +94,21 @@ func (rc *redisConn) do(timeout time.Duration, args ...string) (interface{}, err
 
 // read reads one RESP2 reply: a string, an int64, an []interface{}, a
 // redisError or nil.
-func (rc *redisConn) read() (interface{}, error) {
-	line, err := rc.r.ReadString('\n')
+func (rc *redisConn) read() (interface{}, error) { return rc.readDepth(0) }
+
+// Limits on what a server may send: a value as long as the longest line
+// with room to spare, arrays no deeper than a stream reply needs.
+const (
+	redisMaxBulk  = 64 << 20
+	redisMaxArray = 1 << 20
+	redisMaxDepth = 6
+)
+
+func (rc *redisConn) readDepth(depth int) (interface{}, error) {
+	if depth > redisMaxDepth {
+		return nil, errors.New("redis: a reply nested too deep")
+	}
+	line, err := readLimited(rc.r, 64<<10)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +125,7 @@ func (rc *redisConn) read() (interface{}, error) {
 		return strconv.ParseInt(body, 10, 64)
 	case '$':
 		n, err := strconv.Atoi(body)
-		if err != nil || n < -1 || n > 512<<20 {
+		if err != nil || n < -1 || n > redisMaxBulk {
 			return nil, errors.New("redis: a bad bulk length")
 		}
 		if n == -1 {
@@ -125,7 +138,7 @@ func (rc *redisConn) read() (interface{}, error) {
 		return string(b[:n]), nil
 	case '*':
 		n, err := strconv.Atoi(body)
-		if err != nil || n < -1 || n > 1<<24 {
+		if err != nil || n < -1 || n > redisMaxArray {
 			return nil, errors.New("redis: a bad array length")
 		}
 		if n == -1 {
@@ -133,7 +146,7 @@ func (rc *redisConn) read() (interface{}, error) {
 		}
 		a := make([]interface{}, n)
 		for i := range a {
-			if a[i], err = rc.read(); err != nil {
+			if a[i], err = rc.readDepth(depth + 1); err != nil {
 				return nil, err
 			}
 		}
@@ -361,7 +374,12 @@ func (s *redisSink) Last(ctx context.Context) (uint64, []byte, error) {
 	return pos, []byte(line), nil
 }
 
+// Write queues a line. Each flush sends its lines in one MULTI/EXEC, so a
+// refusal (out of memory, say) stores none of them rather than leaving a gap.
 func (s *redisSink) Write(ctx context.Context, pos uint64, line []byte) error {
+	if s.rc.pending == 0 {
+		s.rc.send("MULTI")
+	}
 	s.rc.send("XADD", s.e.Name, strconv.FormatUint(pos, 10)+"-1", s.field, string(line))
 	if s.rc.pending >= 1000 {
 		return s.Flush(ctx)
@@ -373,6 +391,7 @@ func (s *redisSink) Flush(ctx context.Context) error {
 	if s.rc.pending == 0 {
 		return nil
 	}
+	s.rc.send("EXEC")
 	if err := s.rc.w.Flush(); err != nil {
 		return fmt.Errorf("redis %s: %v", s.e.Name, err)
 	}
@@ -385,10 +404,33 @@ func (s *redisSink) Flush(ctx context.Context) error {
 			return fmt.Errorf("redis %s: %v", s.e.Name, err)
 		}
 		if re, ok := v.(redisError); ok && first == nil {
-			first = fmt.Errorf("redis %s: XADD: %v", s.e.Name, re)
+			first = fmt.Errorf("redis %s: %v", s.e.Name, re)
+		}
+		if s.rc.pending == 0 && first == nil {
+			// EXEC's own reply: every XADD's ID, or an error in its place.
+			a, ok := v.([]interface{})
+			if !ok {
+				return fmt.Errorf("redis %s: the transaction was refused", s.e.Name)
+			}
+			for _, x := range a {
+				if re, ok := x.(redisError); ok {
+					return fmt.Errorf("redis %s: XADD: %v", s.e.Name, re)
+				}
+			}
 		}
 	}
 	return first
+}
+
+func (s *redisSink) Mark(ctx context.Context) (string, error) { return redisEnd(ctx, s.e) }
+
+func (s *redisSink) Each(ctx context.Context, after string, f func([]byte) error) error {
+	return each(ctx, s.e, after, func(m Message) error {
+		if m.Problem != "" {
+			return fmt.Errorf("redis %s: %s, at %s", s.e.Name, m.Problem, m.At)
+		}
+		return f(m.Value)
+	})
 }
 
 func (s *redisSink) Close() error { return s.rc.Close() }
@@ -401,6 +443,9 @@ func redisProduce(ctx context.Context, e *Endpoint, values [][]byte) error {
 	defer rc.Close()
 	s := &redisSink{e: e, rc: rc, field: redisField(e)}
 	for _, v := range values {
+		if rc.pending == 0 {
+			rc.send("MULTI")
+		}
 		rc.send("XADD", e.Name, "*", s.field, string(v))
 		if rc.pending >= 1000 {
 			if err := s.Flush(ctx); err != nil {
@@ -409,4 +454,20 @@ func redisProduce(ctx context.Context, e *Endpoint, values [][]byte) error {
 		}
 	}
 	return s.Flush(ctx)
+}
+
+// readLimited reads a line of at most max bytes.
+func readLimited(r *bufio.Reader, max int) (string, error) {
+	var b []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if len(b)+len(chunk) > max {
+			return "", errors.New("a protocol line longer than the limit")
+		}
+		b = append(b, chunk...)
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		return string(b), err
+	}
 }

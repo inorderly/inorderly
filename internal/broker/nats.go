@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,7 @@ type natsMsg struct {
 	subject string
 	reply   string
 	status  string // "404", "408" and so on, from a header-only status message
+	desc    string // the status's description, such as "Consumer Deleted"
 	header  []byte
 	data    []byte
 }
@@ -63,7 +65,7 @@ func dialNATS(ctx context.Context, e *Endpoint) (*natsConn, error) {
 	}
 	nc := &natsConn{e: e, c: c, r: bufio.NewReaderSize(c, 1<<16)}
 	c.SetDeadline(time.Now().Add(30 * time.Second))
-	line, err := nc.r.ReadString('\n')
+	line, err := readLimited(nc.r, 1<<20)
 	if err != nil || !strings.HasPrefix(line, "INFO ") {
 		c.Close()
 		return nil, fmt.Errorf("nats %s: no INFO from the server", e.Host)
@@ -130,7 +132,7 @@ func (nc *natsConn) nextReply() string {
 // read reads one protocol operation, answering PINGs as it goes.
 func (nc *natsConn) read() (string, *natsMsg, error) {
 	for {
-		line, err := nc.r.ReadString('\n')
+		line, err := readLimited(nc.r, 1<<20)
 		if err != nil {
 			return "", nil, err
 		}
@@ -189,6 +191,7 @@ func (nc *natsConn) read() (string, *natsMsg, error) {
 				first, _, _ := bytes.Cut(m.header, []byte("\r\n"))
 				if fs := strings.Fields(string(first)); len(fs) >= 2 {
 					m.status = fs[1]
+					m.desc = strings.Join(fs[2:], " ")
 				}
 			}
 			return "MSG", m, nil
@@ -323,31 +326,41 @@ func openNATSSource(ctx context.Context, e *Endpoint, from, until string) (Sourc
 		s.done = true
 		return s, nil
 	}
+	if err := s.create(); err != nil {
+		nc.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// create makes the consumer, reading on from after s.last.
+func (s *natsSource) create() error {
 	cfg := map[string]interface{}{"ack_policy": "all", "ack_wait": int64(time.Hour), "max_ack_pending": 10000,
-		"mem_storage": true, "num_replicas": 1, "inactive_threshold": int64(5 * time.Minute), "replay_policy": "instant"}
-	if last == 0 {
+		"mem_storage": true, "num_replicas": 1, "inactive_threshold": int64(time.Hour), "replay_policy": "instant"}
+	if s.last == 0 {
 		cfg["deliver_policy"] = "all"
 	} else {
 		cfg["deliver_policy"] = "by_start_sequence"
-		cfg["opt_start_seq"] = last + 1
+		cfg["opt_start_seq"] = s.last + 1
 	}
-	if sub := e.Query.Get("subject"); sub != "" {
+	if sub := s.e.Query.Get("subject"); sub != "" {
 		cfg["filter_subject"] = sub
 	}
 	var ci struct {
 		Name string `json:"name"`
 	}
-	if err := nc.api("CONSUMER.CREATE."+e.Name, map[string]interface{}{"stream_name": e.Name, "config": cfg}, &ci); err != nil {
-		nc.Close()
-		return nil, fmt.Errorf("nats stream %s: %v", e.Name, err)
+	if err := s.nc.api("CONSUMER.CREATE."+s.e.Name, map[string]interface{}{"stream_name": s.e.Name, "config": cfg}, &ci); err != nil {
+		return fmt.Errorf("nats stream %s: %v", s.e.Name, err)
 	}
 	s.consumer = ci.Name
-	return s, nil
+	s.buf, s.seqs = nil, nil
+	return nil
 }
 
 // pull asks for up to 256 messages and reads them, ending at a status
-// message or when the batch is full. It returns whether the server had none.
-func (s *natsSource) pull(wait time.Duration) (bool, error) {
+// message or when the batch is full. It returns the status that ended it,
+// if one did.
+func (s *natsSource) pull(wait time.Duration) (*natsMsg, error) {
 	const batch = 256
 	if s.bounded {
 		wait = time.Second
@@ -362,7 +375,7 @@ func (s *natsSource) pull(wait time.Duration) (bool, error) {
 	nc.w.Write(b)
 	nc.w.WriteString("\r\n")
 	if err := nc.w.Flush(); err != nil {
-		return false, err
+		return nil, err
 	}
 	nc.c.SetDeadline(time.Now().Add(wait + 30*time.Second))
 	got := 0
@@ -377,7 +390,7 @@ func (s *natsSource) pull(wait time.Duration) (bool, error) {
 	for got < batch {
 		op, m, err := nc.read()
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 		if op != "MSG" {
 			continue
@@ -385,24 +398,18 @@ func (s *natsSource) pull(wait time.Duration) (bool, error) {
 		// Deliveries keep the subject they were published to and come on our
 		// inbox subscription with an ack subject naming this consumer; status
 		// messages come on the pull's own reply subject.
-		if m.status == "" && !ackFor(m.reply, s.e.Name, s.consumer) {
-			continue
-		}
 		if m.status != "" {
-			if m.subject != reply {
+			if m.subject != reply || m.status == "100" {
 				continue
 			}
-			switch m.status {
-			case "100": // a heartbeat
-				continue
-			case "404", "408", "409":
-				return got == 0, nil
-			}
-			return false, fmt.Errorf("pull status %s", m.status)
+			return m, nil
+		}
+		if !ackFor(m.reply, s.e.Name, s.consumer) {
+			continue
 		}
 		seq, pending, ok := ackSeq(m.reply)
 		if !ok {
-			return false, fmt.Errorf("a message without a JetStream ack subject (%q)", m.reply)
+			return nil, fmt.Errorf("a message without a JetStream ack subject (%q)", m.reply)
 		}
 		got++
 		lastReply = m.reply
@@ -411,16 +418,102 @@ func (s *natsSource) pull(wait time.Duration) (bool, error) {
 			prev = s.seqs[len(s.seqs)-1]
 		}
 		if seq <= prev {
-			return false, fmt.Errorf("stream sequence %d came after %d", seq, prev)
+			return nil, fmt.Errorf("stream sequence %d came after %d", seq, prev)
 		}
 		s.buf = append(s.buf, Message{Value: m.data, At: "seq " + strconv.FormatUint(seq, 10)})
 		s.seqs = append(s.seqs, seq)
 		if pending == 0 && s.bounded {
 			s.drained = true // nothing more is waiting: the rest of the batch won't come
-			return false, nil
+			return nil, nil
 		}
 	}
-	return false, nil
+	return nil, nil
+}
+
+// pendingNow asks the server how many messages the consumer has yet to
+// deliver; ok is false when the consumer is gone.
+func (s *natsSource) pendingNow() (uint64, bool, error) {
+	var ci struct {
+		NumPending uint64 `json:"num_pending"`
+	}
+	err := s.nc.api("CONSUMER.INFO."+s.e.Name+"."+s.consumer, nil, &ci)
+	var ae *jsAPIError
+	if errors.As(err, &ae) && ae.e.Code == 404 {
+		return 0, false, nil
+	}
+	return ci.NumPending, true, err
+}
+
+func (s *natsSource) Next(ctx context.Context, wait time.Duration) (Message, error) {
+	troubles := 0
+	for len(s.buf) == 0 {
+		if err := ctx.Err(); err != nil {
+			return Message{}, err
+		}
+		if s.done || s.drained {
+			return Message{}, io.EOF
+		}
+		st, err := s.pull(wait)
+		if err != nil {
+			return Message{}, fmt.Errorf("nats stream %s: %v", s.e.Name, err)
+		}
+		if len(s.buf) > 0 || st == nil {
+			continue
+		}
+		switch st.status {
+		case "404", "408":
+			if !s.bounded {
+				return Message{}, ErrIdle
+			}
+			// A bounded read ends only when the consumer says nothing is left.
+			n, alive, err := s.pendingNow()
+			if err != nil {
+				return Message{}, fmt.Errorf("nats stream %s: %v", s.e.Name, err)
+			}
+			if alive && n == 0 {
+				s.done = true
+				continue
+			}
+			if !alive {
+				if err := s.create(); err != nil {
+					return Message{}, err
+				}
+			}
+		case "409":
+			// The consumer was deleted (idle too long, or by hand), or the
+			// stream's leader changed: make it again or ask again.
+			if troubles++; troubles > 50 {
+				return Message{}, fmt.Errorf("nats stream %s: %s %s, again and again", s.e.Name, st.status, st.desc)
+			}
+			if strings.Contains(strings.ToLower(st.desc), "deleted") {
+				if err := s.create(); err != nil {
+					return Message{}, err
+				}
+			} else {
+				time.Sleep(200 * time.Millisecond)
+			}
+		default:
+			return Message{}, fmt.Errorf("nats stream %s: pull status %s %s", s.e.Name, st.status, st.desc)
+		}
+	}
+	if s.bounded && s.seqs[0] > s.until {
+		s.done, s.buf, s.seqs = true, nil, nil
+		return Message{}, io.EOF
+	}
+	m := s.buf[0]
+	s.last = s.seqs[0]
+	s.buf, s.seqs = s.buf[1:], s.seqs[1:]
+	return m, nil
+}
+
+func (s *natsSource) Position() string { return strconv.FormatUint(s.last, 10) }
+
+func (s *natsSource) Close() error {
+	if s.consumer != "" {
+		var v struct{}
+		s.nc.api("CONSUMER.DELETE."+s.e.Name+"."+s.consumer, nil, &v)
+	}
+	return s.nc.Close()
 }
 
 // ackFor says whether an ack subject belongs to this stream's consumer.
@@ -452,46 +545,6 @@ func ackSeq(reply string) (seq, pending uint64, ok bool) {
 	seq, err1 := strconv.ParseUint(t[i], 10, 64)
 	pending, err2 := strconv.ParseUint(t[i+3], 10, 64)
 	return seq, pending, err1 == nil && err2 == nil
-}
-
-func (s *natsSource) Next(ctx context.Context, wait time.Duration) (Message, error) {
-	for len(s.buf) == 0 {
-		if err := ctx.Err(); err != nil {
-			return Message{}, err
-		}
-		if s.done || s.drained {
-			return Message{}, io.EOF
-		}
-		empty, err := s.pull(wait)
-		if err != nil {
-			return Message{}, fmt.Errorf("nats stream %s: %v", s.e.Name, err)
-		}
-		if len(s.buf) == 0 && empty {
-			if s.bounded {
-				s.done = true
-				continue
-			}
-			return Message{}, ErrIdle
-		}
-	}
-	if s.bounded && s.seqs[0] > s.until {
-		s.done, s.buf, s.seqs = true, nil, nil
-		return Message{}, io.EOF
-	}
-	m := s.buf[0]
-	s.last = s.seqs[0]
-	s.buf, s.seqs = s.buf[1:], s.seqs[1:]
-	return m, nil
-}
-
-func (s *natsSource) Position() string { return strconv.FormatUint(s.last, 10) }
-
-func (s *natsSource) Close() error {
-	if s.consumer != "" {
-		var v struct{}
-		s.nc.api("CONSUMER.DELETE."+s.e.Name+"."+s.consumer, nil, &v)
-	}
-	return s.nc.Close()
 }
 
 type natsSink struct {
@@ -593,14 +646,18 @@ func (s *natsSink) Flush(ctx context.Context) error {
 			return fmt.Errorf("nats stream %s: no stream takes subject %s", s.e.Name, s.subject)
 		}
 		var ack struct {
-			Stream string   `json:"stream"`
-			Error  *jsError `json:"error"`
+			Stream    string   `json:"stream"`
+			Duplicate bool     `json:"duplicate"`
+			Error     *jsError `json:"error"`
 		}
-		if err := json.Unmarshal(m.data, &ack); err != nil || ack.Error != nil || ack.Stream != s.e.Name {
+		if err := json.Unmarshal(m.data, &ack); err != nil || ack.Error != nil || ack.Stream != s.e.Name || (ack.Duplicate && pos > 0) {
 			desc := "a bad ack"
-			if ack.Error != nil {
+			switch {
+			case ack.Error != nil:
 				desc = ack.Error.Description
-			} else if ack.Stream != "" {
+			case ack.Duplicate:
+				desc = "the stream took it for a duplicate of a message sent in the last minutes, and didn't store it"
+			case ack.Stream != "":
 				desc = "stored in stream " + ack.Stream
 			}
 			return fmt.Errorf("nats stream %s: line %d: %s", s.e.Name, pos, desc)
@@ -610,6 +667,23 @@ func (s *natsSink) Flush(ctx context.Context) error {
 }
 
 func (s *natsSink) Close() error { return s.nc.Close() }
+
+// readEndpoint reads back only the output's subject.
+func (s *natsSink) readEndpoint() *Endpoint {
+	e := *s.e
+	e.Query = url.Values{}
+	for k, v := range s.e.Query {
+		e.Query[k] = v
+	}
+	e.Query.Set("subject", s.subject)
+	return &e
+}
+
+func (s *natsSink) Mark(ctx context.Context) (string, error) { return natsEnd(ctx, s.e) }
+
+func (s *natsSink) Each(ctx context.Context, after string, f func([]byte) error) error {
+	return each(ctx, s.readEndpoint(), after, func(m Message) error { return f(m.Value) })
+}
 
 func natsProduce(ctx context.Context, e *Endpoint, values [][]byte) error {
 	sk, err := openNATSSink(ctx, e)

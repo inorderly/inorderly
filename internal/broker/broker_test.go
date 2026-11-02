@@ -219,3 +219,58 @@ func fmtV(v interface{}) string {
 	}
 	return "?"
 }
+
+func TestTokensAndUsers(t *testing.T) {
+	e, err := Parse("nats://s3cr3t@h/s")
+	if err != nil || e.User != "s3cr3t" {
+		t.Fatalf("%+v %v", e, err)
+	}
+	if s := e.String(); strings.Contains(s, "s3cr3t") {
+		t.Fatalf("a NATS token in String(): %s", s)
+	}
+	if _, err := Parse("nats://s3cr3t@h"); err == nil || strings.Contains(err.Error(), "s3cr3t") {
+		t.Fatalf("a NATS token in an error: %v", err)
+	}
+	for _, u := range []string{"redis://user@h/s", "kafka://user@h/t"} {
+		if _, err := Parse(u); err == nil || !strings.Contains(err.Error(), "needs a password") {
+			t.Fatalf("%s: %v", u, err)
+		}
+	}
+	if _, err := Parse("redis://:pw@h/s"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Records of an aborted transaction are left out; committed ones and plain
+// records are read.
+func TestAbortedTransactionsSkipped(t *testing.T) {
+	mk := func(base, pid int64, attrs int16, vals ...string) []byte {
+		var vv [][]byte
+		for _, v := range vals {
+			vv = append(vv, []byte(v))
+		}
+		b := encodeBatch(vv, 0)
+		binary.BigEndian.PutUint64(b, uint64(base))
+		binary.BigEndian.PutUint64(b[12+31:], uint64(pid))
+		binary.BigEndian.PutUint16(b[12+9:], uint16(attrs))
+		binary.BigEndian.PutUint32(b[12+5:], crc32.Checksum(b[12+9:], crc32c))
+		return b
+	}
+	var log []byte
+	log = append(log, mk(0, -1, 0, "plain")...)
+	log = append(log, mk(1, 7, 0x10, "aborted-1", "aborted-2")...)
+	log = append(log, mk(3, 8, 0x10, "committed")...)
+	log = append(log, mk(4, 7, 0x30, "marker")...)
+	log = append(log, mk(5, 7, 0x10, "next-txn")...)
+	recs, after, err := decodeBatches(log, 0, abortedTxn{pid: 7, first: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range recs {
+		got = append(got, string(r.value))
+	}
+	if strings.Join(got, ",") != "plain,committed,next-txn" || after != 6 {
+		t.Fatalf("read %v, after %d", got, after)
+	}
+}

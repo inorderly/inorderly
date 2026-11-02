@@ -130,10 +130,10 @@ inorderly -in kafka://kafka-1:9092/payments -in redis://cache:6379/orders \
 ```
 
 Inorderly keeps where it got to in each input in its own checkpoint, without
-consumer groups. Killed and started again, it reads on from there, reads the
-output's last message to see how far it got, and doesn't write those lines
-again. With brokers on both ends, every line still comes out once, in the
-same order.
+consumer groups. Killed and started again, it reads on from there, reads back
+what it had already written past the checkpoint, checks every line of it, and
+doesn't write those lines again. With brokers on both ends, every line comes
+out once, in the same order, or the run stops and says what it found.
 
 Without `-follow` a run reads up to where each input ended when it started,
 then flushes. With `-follow` it keeps going as messages come, and on SIGTERM

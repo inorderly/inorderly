@@ -37,7 +37,8 @@ type checkpoint struct {
 	Next        int                 `json:"next"`
 	Out         string              `json:"out"`
 	OutSize     int64               `json:"out_size"`
-	OutPos      uint64              `json:"out_pos,omitempty"` // a broker output: the last pos stored
+	OutPos      uint64              `json:"out_pos,omitempty"`  // a broker output: the last pos stored
+	OutMark     string              `json:"out_mark,omitempty"` // a broker output: its own position then
 	Rejects     string              `json:"rejects"`
 	RejectsSize int64               `json:"rejects_size"`
 	Late        string              `json:"late,omitempty"`
@@ -105,45 +106,89 @@ func (o *fileOutput) close() {
 	}
 }
 
-// brokerOutput writes one message per line. After a restart the broker may
-// already hold lines past the checkpoint; those are not written again, and
-// the last one must be the line this run makes at that pos.
+// brokerOutput writes one message per line. A broker output can't be cut
+// back to a checkpoint, so each checkpoint keeps the output's own position
+// (its mark). After a restart, every line stored past the mark is read back:
+// their pos must follow on from the checkpoint with no gap, and each must be
+// the line this run makes at that pos; those aren't written again. At the
+// end, everything this run's lines landed among is read back once more and
+// checked for gaps and repeats. Writes use their own context, so a signal
+// never leaves one half done.
 type brokerOutput struct {
-	name   string
-	sink   broker.Sink
-	skip   uint64 // lines up to here are already stored
-	last   []byte // the stored line at skip
-	pos    uint64
-	stored uint64
+	name    string
+	sink    broker.Sink
+	base    uint64   // the checkpoint's pos
+	stored  [][]byte // lines found past the checkpoint, base+1 on
+	pos     uint64
+	durPos  uint64 // the last pos made durable
+	mark    string // the mark at the last checkpoint
+	from    string // the mark this run started reading back from
+	fromPos uint64
 }
 
-func (o *brokerOutput) write(ctx context.Context, pos uint64, line []byte) error {
+var bg = context.Background()
+
+func (o *brokerOutput) write(_ context.Context, pos uint64, line []byte) error {
 	o.pos = pos
-	if pos <= o.skip {
-		if pos == o.skip && !bytes.Equal(line, o.last) {
-			return fmt.Errorf("%s holds a different line at pos %d than this run makes; something else writes there", o.name, pos)
+	if pos <= o.base+uint64(len(o.stored)) {
+		if pos > o.base && !bytes.Equal(line, o.stored[pos-o.base-1]) {
+			return fmt.Errorf("%s holds a different line at pos %d than this run makes; something else writes there, or the inputs changed", o.name, pos)
 		}
 		return nil
 	}
-	return o.sink.Write(ctx, pos, line)
+	return o.sink.Write(bg, pos, line)
 }
-func (o *brokerOutput) flush(ctx context.Context) error { return o.sink.Flush(ctx) }
-func (o *brokerOutput) durable(ctx context.Context) error {
-	if err := o.sink.Flush(ctx); err != nil {
+func (o *brokerOutput) flush(context.Context) error { return o.sink.Flush(bg) }
+func (o *brokerOutput) durable(context.Context) error {
+	if err := o.sink.Flush(bg); err != nil {
 		return err
 	}
-	if o.pos > o.stored {
-		o.stored = o.pos
+	if o.pos > o.durPos {
+		o.durPos = o.pos
 	}
+	m, err := o.sink.Mark(bg)
+	if err != nil {
+		return err
+	}
+	o.mark = m
 	return nil
 }
 func (o *brokerOutput) size() int64     { return 0 }
 func (o *brokerOutput) lastPos() uint64 { return o.pos }
+
+// readBack checks the lines stored after a mark: pos must go on from first
+// with no gap or repeat. keep collects them.
+func (o *brokerOutput) readBack(after string, first uint64, keep bool) (uint64, error) {
+	next := first
+	err := o.sink.Each(bg, after, func(line []byte) error {
+		p, err := broker.PosOf(line)
+		if err != nil {
+			return fmt.Errorf("%s holds a line Inorderly didn't write, after pos %d", o.name, next-1)
+		}
+		if p != next {
+			return fmt.Errorf("%s holds pos %d where pos %d should be: a line is missing or there twice", o.name, p, next)
+		}
+		if keep {
+			o.stored = append(o.stored, append([]byte(nil), line...))
+		}
+		next++
+		return nil
+	})
+	return next - 1, err
+}
+
 func (o *brokerOutput) finish() error {
-	if o.pos < o.skip {
-		return fmt.Errorf("%s holds lines up to pos %d, but this run made only %d", o.name, o.skip, o.pos)
+	if err := o.sink.Flush(bg); err != nil {
+		return err
 	}
-	return nil
+	if o.pos < o.base+uint64(len(o.stored)) {
+		return fmt.Errorf("%s holds lines up to pos %d, but this run made only %d", o.name, o.base+uint64(len(o.stored)), o.pos)
+	}
+	last, err := o.readBack(o.from, o.fromPos+1, false)
+	if err == nil && last != o.pos {
+		err = fmt.Errorf("%s ends at pos %d, but this run made %d lines", o.name, last, o.pos)
+	}
+	return err
 }
 func (o *brokerOutput) close() { o.sink.Close() }
 
@@ -256,26 +301,40 @@ func newRunner(ctx context.Context, cfg inorderly.Config, ins []string, out, rej
 			return nil, err
 		}
 		bout = &brokerOutput{name: outName, sink: sink}
-		pos, line, err := sink.Last(ctx)
-		if err != nil {
-			sink.Close()
-			return nil, err
+		r.out = bout
+		var pos uint64
+		if old == nil {
+			if pos, _, err = sink.Last(ctx); err != nil {
+				r.close()
+				return nil, err
+			}
 		}
 		switch {
 		case old == nil && pos > 0:
-			sink.Close()
+			r.close()
 			return nil, fmt.Errorf("%s already holds lines; write to an empty one, or carry on with the -state that wrote them", outName)
-		case old != nil && pos < old.OutPos:
-			sink.Close()
-			return nil, fmt.Errorf("%s holds lines up to pos %d, but the checkpoint in %s says %d were stored; it has been changed", outName, pos, stateDir, old.OutPos)
+		case old == nil:
+			if bout.mark, err = sink.Mark(ctx); err != nil {
+				r.close()
+				return nil, err
+			}
+		case old.OutMark == "":
+			r.close()
+			return nil, fmt.Errorf("the checkpoint in %s is damaged: it has no mark for %s", stateDir, outName)
+		case !old.Finished:
+			// Read back what was stored after the checkpoint.
+			bout.base, bout.mark = old.OutPos, old.OutMark
+			if _, err := bout.readBack(old.OutMark, old.OutPos+1, true); err != nil {
+				r.close()
+				return nil, err
+			}
 		}
-		bout.skip, bout.last, bout.stored = pos, line, pos
-		r.out = bout
+		bout.from, bout.fromPos, bout.durPos = bout.mark, bout.base, bout.base
 	}
 
 	if old != nil && old.Finished {
 		if bout != nil {
-			if bout.skip != old.OutPos {
+			if pos, _, err := bout.sink.Last(ctx); err != nil || pos != old.OutPos {
 				r.close()
 				return nil, fmt.Errorf("this run finished before, but %s has changed since; use another -state to run it again", out)
 			}
@@ -842,7 +901,7 @@ func (r *runner) checkpoint(ctx context.Context, finished bool) error {
 	cp.Log = r.logName
 	cp.OutSize = r.out.size()
 	if bo, ok := r.out.(*brokerOutput); ok {
-		cp.OutPos = bo.stored
+		cp.OutPos, cp.OutMark = bo.durPos, bo.mark
 	}
 	if r.rej != nil {
 		cp.RejectsSize = r.rej.n
